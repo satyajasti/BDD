@@ -16,29 +16,37 @@ def get_columns_from_table(conn, schema_name, table_name):
     cur.close()
     return columns
 
-# Function to calculate NULL percentage, non-null count, and NULL count for each column
+# Function to calculate total count, non-null count, non-null percentage, null count, and null percentage for each column
 def calculate_null_stats(conn, schema_name, table_name, columns):
     null_stats = []
     cur = conn.cursor()
-    
+
     for column in columns:
         query = f"""
             SELECT 
                 '{column}' AS column_name, 
-                ROUND((COUNT(*) - COUNT({column})) * 100.0 / COUNT(*), 2) AS null_percentage,
+                COUNT(*) AS total_count,
                 COUNT({column}) AS non_null_count,
-                COUNT(*) - COUNT({column}) AS null_count
+                ROUND(COUNT({column}) * 100.0 / COUNT(*), 2) AS non_null_percentage,
+                COUNT(*) - COUNT({column}) AS null_count,
+                ROUND((COUNT(*) - COUNT({column})) * 100.0 / COUNT(*), 2) AS null_percentage
             FROM {schema_name}.{table_name}
         """
         cur.execute(query)
         result = cur.fetchone()
+        
+        # Print the results for the column to the console
+        print(f"Column: {result[0]}, Total Count: {result[1]}, Non-NULL Count: {result[2]}, Non-NULL Percentage: {result[3]}%, NULL Count: {result[4]}, NULL Percentage: {result[5]}%")
+        
         null_stats.append({
             'column_name': result[0],
-            'null_percentage': result[1],
+            'total_count': result[1],
             'non_null_count': result[2],
-            'null_count': result[3]
+            'non_null_percentage': f"{result[3]}%",
+            'null_count': result[4],
+            'null_percentage': f"{result[5]}%"
         })
-    
+
     cur.close()
     return null_stats
 
@@ -50,7 +58,7 @@ def main():
     # Get all column names from the table
     columns = get_columns_from_table(conn, schema_name, table_name)
 
-    # Calculate NULL percentage, non-null count, and NULL count for each column
+    # Calculate NULL stats for each column
     null_stats = calculate_null_stats(conn, schema_name, table_name, columns)
 
     # Convert the results to a Pandas DataFrame
@@ -60,7 +68,7 @@ def main():
     output_file = 'null_stats_report.xlsx'
     df.to_excel(output_file, sheet_name='Null_Stats', index=False)
 
-    print(f"Results written to {output_file}")
+    print(f"\nResults have also been written to {output_file}")
 
     # Close the Snowflake connection
     conn.close()
