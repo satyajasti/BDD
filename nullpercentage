@@ -16,24 +16,31 @@ def get_columns_from_table(conn, schema_name, table_name):
     cur.close()
     return columns
 
-# Function to calculate NULL percentage for each column
-def calculate_null_percentage(conn, schema_name, table_name, columns):
-    null_percentages = []
+# Function to calculate NULL percentage, non-null count, and NULL count for each column
+def calculate_null_stats(conn, schema_name, table_name, columns):
+    null_stats = []
     cur = conn.cursor()
     
     for column in columns:
         query = f"""
             SELECT 
                 '{column}' AS column_name, 
-                ROUND((1 - COUNT({column}) * 1.0 / COUNT(*)) * 100, 2) AS null_percentage
+                ROUND((COUNT(*) - COUNT({column})) * 100.0 / COUNT(*), 2) AS null_percentage,
+                COUNT({column}) AS non_null_count,
+                COUNT(*) - COUNT({column}) AS null_count
             FROM {schema_name}.{table_name}
         """
         cur.execute(query)
         result = cur.fetchone()
-        null_percentages.append({'column_name': result[0], 'null_percentage': result[1]})
+        null_stats.append({
+            'column_name': result[0],
+            'null_percentage': result[1],
+            'non_null_count': result[2],
+            'null_count': result[3]
+        })
     
     cur.close()
-    return null_percentages
+    return null_stats
 
 # Main function to run the process and write results to Excel
 def main():
@@ -43,15 +50,15 @@ def main():
     # Get all column names from the table
     columns = get_columns_from_table(conn, schema_name, table_name)
 
-    # Calculate NULL percentage for each column
-    null_percentages = calculate_null_percentage(conn, schema_name, table_name, columns)
+    # Calculate NULL percentage, non-null count, and NULL count for each column
+    null_stats = calculate_null_stats(conn, schema_name, table_name, columns)
 
     # Convert the results to a Pandas DataFrame
-    df = pd.DataFrame(null_percentages)
+    df = pd.DataFrame(null_stats)
 
     # Write the DataFrame to an Excel file
-    output_file = 'null_percentage_report.xlsx'
-    df.to_excel(output_file, sheet_name='Null_Percentage', index=False)
+    output_file = 'null_stats_report.xlsx'
+    df.to_excel(output_file, sheet_name='Null_Stats', index=False)
 
     print(f"Results written to {output_file}")
 
@@ -60,9 +67,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-"data_pattern_checks": {
-    "email_column": "^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$",
-    "date_column": "^\\d{4}-\\d{2}-\\d{2}$"  // Example regex for date pattern
-  }
