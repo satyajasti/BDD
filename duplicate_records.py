@@ -19,6 +19,7 @@ def get_columns_from_table(conn, schema_name, table_name):
 # Function to check for duplicate records in each column
 def check_duplicate_records(conn, schema_name, table_name, columns, writer):
     cur = conn.cursor()
+    duplicate_summary = []
 
     for column in columns:
         query = f"""
@@ -31,6 +32,14 @@ def check_duplicate_records(conn, schema_name, table_name, columns, writer):
         duplicates = cur.fetchall()
 
         if duplicates:
+            # Record that duplicates were found and get the count
+            total_duplicates = sum([row[1] for row in duplicates])
+            duplicate_summary.append({
+                'column_name': column,
+                'Duplicate': 'Yes',
+                'Count': total_duplicates
+            })
+
             # Convert the result to a DataFrame and limit the data to 5 rows
             df_duplicates = pd.DataFrame(duplicates, columns=[column, 'Count']).head(5)
 
@@ -45,18 +54,16 @@ def check_duplicate_records(conn, schema_name, table_name, columns, writer):
             # Write the column name in A1
             writer.sheets[sheet_name].cell(row=1, column=1).value = f"Column: {column}"
         else:
-            # Print "No duplicates" to the console
+            # No duplicates found
+            duplicate_summary.append({
+                'column_name': column,
+                'Duplicate': 'No',
+                'Count': 0
+            })
             print(f"No duplicate found for column {column}")
 
-            # Write "No duplicate found" in Excel
-            sheet_name = f'{column}_Duplicates'
-            df_no_duplicates = pd.DataFrame([["No duplicate found for this column"]], columns=["Result"])
-            df_no_duplicates.to_excel(writer, sheet_name=sheet_name, startrow=1, startcol=1, index=False)
-
-            # Write the column name in A1
-            writer.sheets[sheet_name].cell(row=1, column=1).value = f"Column: {column}"
-
     cur.close()
+    return duplicate_summary
 
 # Main function to run the process and write results to Excel
 def main():
@@ -72,7 +79,11 @@ def main():
     # Create an Excel writer
     with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
         # Validate duplicate records for each column
-        check_duplicate_records(conn, schema_name, table_name, columns, writer)
+        duplicate_summary = check_duplicate_records(conn, schema_name, table_name, columns, writer)
+
+        # Write summary of duplicates to a separate sheet
+        df_summary = pd.DataFrame(duplicate_summary)
+        df_summary.to_excel(writer, sheet_name='Duplicate_Summary', index=False)
 
     print(f"\nDuplicate records validation results written to {output_file}")
 
