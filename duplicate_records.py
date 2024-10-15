@@ -16,8 +16,8 @@ def get_columns_from_table(conn, schema_name, table_name):
     cur.close()
     return columns
 
-# Function to check for duplicate records in each column
-def check_duplicate_records(conn, schema_name, table_name, columns, writer):
+# Function to check for duplicate records in each column and add the result to a summary
+def check_duplicate_records(conn, schema_name, table_name, columns):
     cur = conn.cursor()
     duplicate_summary = []
 
@@ -32,34 +32,20 @@ def check_duplicate_records(conn, schema_name, table_name, columns, writer):
         duplicates = cur.fetchall()
 
         if duplicates:
-            # Record that duplicates were found and get the count
-            total_duplicates = sum([row[1] for row in duplicates])
+            # Record that duplicates were found
             duplicate_summary.append({
                 'column_name': column,
-                'Duplicate': 'Yes',
-                'Count': total_duplicates
+                'Duplicate': 'Yes'
             })
-
-            # Convert the result to a DataFrame and limit the data to 5 rows
-            df_duplicates = pd.DataFrame(duplicates, columns=[column, 'Count']).head(5)
-
-            # Print the duplicates to the console
-            print(f"\nDuplicate records found for column {column}:")
-            print(df_duplicates)
-
-            # Write the duplicates to Excel
-            sheet_name = f'{column}_Duplicates'
-            df_duplicates.to_excel(writer, sheet_name=sheet_name, startrow=1, startcol=1, index=False)
-
-            # Write the column name in A1
-            writer.sheets[sheet_name].cell(row=1, column=1).value = f"Column: {column}"
+            # Print the result to the console
+            print(f"Duplicate records found for column {column}")
         else:
             # No duplicates found
             duplicate_summary.append({
                 'column_name': column,
-                'Duplicate': 'No',
-                'Count': 0
+                'Duplicate': 'No'
             })
+            # Print the result to the console
             print(f"No duplicate found for column {column}")
 
     cur.close()
@@ -73,19 +59,20 @@ def main():
     # Get all column names from the table
     columns = get_columns_from_table(conn, schema_name, table_name)
 
+    # Check for duplicate records in each column and summarize results
+    duplicate_summary = check_duplicate_records(conn, schema_name, table_name, columns)
+
     # Output file for the results
-    output_file = 'duplicate_records_validation.xlsx'
+    output_file = 'duplicate_records_summary.xlsx'
 
-    # Create an Excel writer
+    # Convert the summary to a DataFrame and write it to a single sheet
+    df_summary = pd.DataFrame(duplicate_summary)
+    
+    # Write the DataFrame to the Excel file
     with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
-        # Validate duplicate records for each column
-        duplicate_summary = check_duplicate_records(conn, schema_name, table_name, columns, writer)
-
-        # Write summary of duplicates to a separate sheet
-        df_summary = pd.DataFrame(duplicate_summary)
         df_summary.to_excel(writer, sheet_name='Duplicate_Summary', index=False)
 
-    print(f"\nDuplicate records validation results written to {output_file}")
+    print(f"\nDuplicate records validation summary written to {output_file}")
 
     # Close the Snowflake connection
     conn.close()
