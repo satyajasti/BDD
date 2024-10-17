@@ -55,7 +55,10 @@ def main():
     conn, database1, schema1, table1, database2, schema2, table2 = get_snowflake_connection('config.json')
 
     # Describe both tables
+    print(f"Describing table 1: {database1}.{schema1}.{table1}")
     df_table_1 = describe_table(conn, database1, schema1, table1)
+
+    print(f"Describing table 2: {database2}.{schema2}.{table2}")
     df_table_2 = describe_table(conn, database2, schema2, table2)
 
     # Compare describe results
