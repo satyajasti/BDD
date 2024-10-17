@@ -1,90 +1,72 @@
-import snowflake.connector
 import pandas as pd
-from snowflake_connection import get_snowflake_connection
+from openpyxl import load_workbook
+from openpyxl.styles import PatternFill
+from snowflake_connectivity import get_snowflake_connection  # Assuming you have this function in the file
 
-# Function to load column mapping from Excel
-def load_column_mapping(excel_file):
-    # Load the mapping from the Excel file
-    df = pd.read_excel(excel_file)
-
-    # Create a dictionary for the column mapping
-    column_mapping = dict(zip(df['Src_clmn na'], df['Trg_ Clmsname']))
-
-    # Extract source and target tables from the Excel
-    src_table = df['Src_table'].iloc[0]
-    trg_table = df['Trg_table'].iloc[0]
-    
-    return column_mapping, src_table, trg_table
-
-# Function to fetch data from a table based on specified columns
-def fetch_table_data(conn, schema_name, table_name, columns):
-    query = f"SELECT {', '.join(columns)} FROM {schema_name}.{table_name}"
+# Function to fetch DESCRIBE TABLE results from Snowflake
+def describe_table(conn, schema_name, table_name):
+    query = f"DESCRIBE TABLE {schema_name}.{table_name}"
     cur = conn.cursor()
     cur.execute(query)
     data = cur.fetchall()
-    df = pd.DataFrame(data, columns=columns)
+    df = pd.DataFrame(data, columns=[desc[0] for desc in cur.description])
     cur.close()
     return df
 
-# Function to compare two DataFrames and find mismatches
-def compare_dataframes(df1, df2, column_mapping):
+# Function to compare the describe results of two tables
+def compare_describe_results(df1, df2):
     mismatches = []
     
-    for col1, col2 in column_mapping.items():
-        # Compare each column from table 1 and table 2
-        df_mismatch = df1[df1[col1] != df2[col2]]
-        
-        if not df_mismatch.empty:
-            mismatch_dict = {
-                'table_1_column': col1,
-                'table_2_column': col2,
-                'mismatch_data_table_1': df1[col1].values,
-                'mismatch_data_table_2': df2[col2].values
-            }
-            mismatches.append(mismatch_dict)
+    # Compare both DataFrames
+    for index, row1 in df1.iterrows():
+        if not row1.equals(df2.iloc[index]):
+            mismatches.append((index, row1, df2.iloc[index]))
     
     return mismatches
 
-# Main function to run the comparison and write mismatches to Excel and console
+# Function to highlight mismatches in Excel
+def highlight_mismatches(writer, sheet_name, mismatches):
+    workbook = writer.book
+    worksheet = writer.sheets[sheet_name]
+    fill = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
+    
+    for mismatch in mismatches:
+        row_num = mismatch[0] + 2  # Excel row starts from 1, account for header
+        worksheet[f"A{row_num}"].fill = fill
+        worksheet[f"B{row_num}"].fill = fill
+
+# Main function to run the comparison and write results to Excel and console
 def main():
-    # Get connection, schema, and table name from JSON config
-    conn, database_name, schema_name, table_1_name, table_2_name = get_snowflake_connection('config.json')
+    # Get connection and table names from JSON config
+    conn, schema_name, table_1_name, table_2_name = get_snowflake_connection('config.json')  # Updated to use existing function
 
-    # Load column mapping from Excel file
-    excel_file = 'mapping_data.xlsx'  # Path to your Excel file
-    column_mapping, src_table, trg_table = load_column_mapping(excel_file)
+    # Describe both tables
+    df_table_1 = describe_table(conn, schema_name, table_1_name)
+    df_table_2 = describe_table(conn, schema_name, table_2_name)
 
-    # Fetch data from both tables
-    df_table_1 = fetch_table_data(conn, schema_name, src_table, list(column_mapping.keys()))
-    df_table_2 = fetch_table_data(conn, schema_name, trg_table, list(column_mapping.values()))
-
-    # Compare the two DataFrames
-    mismatches = compare_dataframes(df_table_1, df_table_2, column_mapping)
+    # Compare describe results
+    mismatches = compare_describe_results(df_table_1, df_table_2)
 
     # Output file for the results
-    output_file = 'table_comparison_mismatches.xlsx'
+    output_file = 'describe_table_comparison.xlsx'
 
-    # If mismatches found, print and write them to Excel
+    # Write the results to Excel
+    with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
+        df_table_1.to_excel(writer, sheet_name=f'{table_1_name}_Describe', index=False)
+        df_table_2.to_excel(writer, sheet_name=f'{table_2_name}_Describe', index=False)
+
+        # Highlight mismatches in both sheets
+        highlight_mismatches(writer, f'{table_1_name}_Describe', mismatches)
+        highlight_mismatches(writer, f'{table_2_name}_Describe', mismatches)
+
+    # Print mismatches in console
     if mismatches:
         print("\nMismatches found:")
-        
-        # Create an Excel writer
-        with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
-            for idx, mismatch in enumerate(mismatches):
-                # Create a DataFrame for the mismatch
-                df_mismatch = pd.DataFrame({
-                    mismatch['table_1_column']: mismatch['mismatch_data_table_1'],
-                    mismatch['table_2_column']: mismatch['mismatch_data_table_2']
-                })
-                
-                # Print the mismatch to the console
-                print(f"\nMismatch {idx + 1}:")
-                print(df_mismatch)
-                
-                # Write the mismatch to Excel
-                df_mismatch.to_excel(writer, sheet_name=f'Mismatch_{idx + 1}', index=False)
-
-        print(f"\nMismatches written to {output_file}")
+        for mismatch in mismatches:
+            index, row1, row2 = mismatch
+            print(f"Mismatch at row {index}:")
+            print(f"Table 1: {row1}")
+            print(f"Table 2: {row2}")
     else:
         print("\nNo mismatches found.")
 
