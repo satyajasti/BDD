@@ -1,11 +1,11 @@
 import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
-from snowflake_connectivity import get_snowflake_connection  # Assuming you have this function in the file
+from snowflake_connectivity import get_snowflake_connection
 
 # Function to fetch DESCRIBE TABLE results from Snowflake
-def describe_table(conn, schema_name, table_name):
-    query = f"DESCRIBE TABLE {schema_name}.{table_name}"
+def describe_table(conn, database_name, schema_name, table_name):
+    query = f"DESCRIBE TABLE {database_name}.{schema_name}.{table_name}"
     cur = conn.cursor()
     cur.execute(query)
     data = cur.fetchall()
@@ -13,15 +13,29 @@ def describe_table(conn, schema_name, table_name):
     cur.close()
     return df
 
-# Function to compare the describe results of two tables
+# Function to compare the describe results of two tables safely
 def compare_describe_results(df1, df2):
     mismatches = []
-    
-    # Compare both DataFrames
-    for index, row1 in df1.iterrows():
-        if not row1.equals(df2.iloc[index]):
-            mismatches.append((index, row1, df2.iloc[index]))
-    
+
+    # Ensure both DataFrames have the same length
+    max_rows = min(len(df1), len(df2))
+
+    for index in range(max_rows):
+        row1 = df1.iloc[index]
+        row2 = df2.iloc[index]
+
+        # Compare rows and log mismatches
+        if not row1.equals(row2):
+            mismatches.append((index, row1, row2))
+
+    # Handle the case where the tables have different numbers of rows
+    if len(df1) > len(df2):
+        for index in range(len(df2), len(df1)):
+            mismatches.append((index, df1.iloc[index], "Row missing in Table 2"))
+    elif len(df2) > len(df1):
+        for index in range(len(df1), len(df2)):
+            mismatches.append((index, "Row missing in Table 1", df2.iloc[index]))
+
     return mismatches
 
 # Function to highlight mismatches in Excel
@@ -38,11 +52,11 @@ def highlight_mismatches(writer, sheet_name, mismatches):
 # Main function to run the comparison and write results to Excel and console
 def main():
     # Get connection and table names from JSON config
-    conn, schema_name, table_1_name, table_2_name = get_snowflake_connection('config.json')  # Updated to use existing function
+    conn, database1, schema1, table1, database2, schema2, table2 = get_snowflake_connection('config.json')
 
     # Describe both tables
-    df_table_1 = describe_table(conn, schema_name, table_1_name)
-    df_table_2 = describe_table(conn, schema_name, table_2_name)
+    df_table_1 = describe_table(conn, database1, schema1, table1)
+    df_table_2 = describe_table(conn, database2, schema2, table2)
 
     # Compare describe results
     mismatches = compare_describe_results(df_table_1, df_table_2)
@@ -52,12 +66,12 @@ def main():
 
     # Write the results to Excel
     with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
-        df_table_1.to_excel(writer, sheet_name=f'{table_1_name}_Describe', index=False)
-        df_table_2.to_excel(writer, sheet_name=f'{table_2_name}_Describe', index=False)
+        df_table_1.to_excel(writer, sheet_name=f'{table1}_Describe', index=False)
+        df_table_2.to_excel(writer, sheet_name=f'{table2}_Describe', index=False)
 
         # Highlight mismatches in both sheets
-        highlight_mismatches(writer, f'{table_1_name}_Describe', mismatches)
-        highlight_mismatches(writer, f'{table_2_name}_Describe', mismatches)
+        highlight_mismatches(writer, f'{table1}_Describe', mismatches)
+        highlight_mismatches(writer, f'{table2}_Describe', mismatches)
 
     # Print mismatches in console
     if mismatches:
