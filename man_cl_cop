@@ -1,66 +1,55 @@
 import pandas as pd
 from snowflake_connectivity import get_snowflake_connection
 
-# Function to read column mappings from Excel
-def read_column_mappings(excel_file):
-    # Read the Excel file into a DataFrame
-    df = pd.read_excel(excel_file)
-    
-    # Extract source and target column names
-    src_columns = df['SRC_clmr'].tolist()
-    trg_columns = df['TRG_clmn'].tolist()
-    
-    return src_columns, trg_columns
+# Function to get the maximum value by length from each column
+def get_largest_value_by_length(conn, schema_name, table_name, column_name):
+    query = f"""
+        SELECT {column_name}
+        FROM {schema_name}.{table_name}
+        ORDER BY LENGTH({column_name}) DESC
+        LIMIT 1
+    """
+    cur = conn.cursor()
+    cur.execute(query)
+    result = cur.fetchone()
+    cur.close()
+    return result[0] if result else None
 
-# Function to compare the source and target columns
-def compare_columns(conn, source_schema, source_table, target_schema, target_table, src_columns, trg_columns):
+# Function to compare the largest values by length between source and target columns
+def compare_largest_values(conn, source_schema, source_table, target_schema, target_table, src_columns, trg_columns):
     comparison_results = []
     
     for src_col, trg_col in zip(src_columns, trg_columns):
-        # Query to compare the source and target columns
-        query = f"""
-            SELECT 
-                src.{src_col} AS source_{src_col}, 
-                trg.{trg_col} AS target_{trg_col}, 
-                CASE 
-                    WHEN src.{src_col} != trg.{trg_col} THEN 'Mismatch'
-                    ELSE 'Match'
-                END AS status
-            FROM {source_schema}.{source_table} src
-            LEFT JOIN {target_schema}.{target_table} trg
-            ON src.id = trg.id  -- Use your actual join condition
-        """
+        # Get the largest value by length for the source column
+        largest_value_src = get_largest_value_by_length(conn, source_schema, source_table, src_col)
         
-        # Execute the query and fetch the results
-        cur = conn.cursor()
-        cur.execute(query)
-        rows = cur.fetchall()
+        # Get the largest value by length for the target column
+        largest_value_trg = get_largest_value_by_length(conn, target_schema, target_table, trg_col)
         
-        # Process the results and append to comparison results
-        for row in rows:
-            comparison_results.append({
-                'Source Column': src_col,
-                'Target Column': trg_col,
-                'Source Value': row[0],
-                'Target Value': row[1],
-                'Status': row[2]
-            })
+        # Determine if the lengths match
+        status = 'Match' if len(largest_value_src) == len(largest_value_trg) else 'Mismatch'
         
-        cur.close()
+        # Append the result
+        comparison_results.append({
+            'Source Column': src_col,
+            'Target Column': trg_col,
+            'Largest Value Src': largest_value_src,
+            'Largest Value Trg': largest_value_trg,
+            'Status': status
+        })
     
     return comparison_results
 
 # Main function to run the comparison and output results
-def main():
+def main(excel_file):
     # Connect to Snowflake (assuming connection details are in config.json)
     conn, database_name, source_schema, source_table, target_schema, target_table = get_snowflake_connection('config.json')
 
     # Read the column mappings from the provided Excel file
-    excel_file = 'column_mappings.xlsx'  # Replace with your actual Excel file name
     src_columns, trg_columns = read_column_mappings(excel_file)
 
-    # Compare the source and target columns
-    comparison_results = compare_columns(conn, source_schema, source_table, target_schema, target_table, src_columns, trg_columns)
+    # Compare the largest values between source and target columns
+    comparison_results = compare_largest_values(conn, source_schema, source_table, target_schema, target_table, src_columns, trg_columns)
 
     # Create a DataFrame from the results
     df_comparison = pd.DataFrame(comparison_results)
@@ -69,7 +58,7 @@ def main():
     print(df_comparison)
 
     # Write the results to an Excel file
-    output_file = 'column_comparison_results.xlsx'
+    output_file = 'largest_value_comparison.xlsx'
     df_comparison.to_excel(output_file, index=False)
 
     print(f"\nComparison results written to {output_file}")
@@ -78,4 +67,5 @@ def main():
     conn.close()
 
 if __name__ == "__main__":
-    main()
+    excel_file = input("Please provide the Excel file path: ")
+    main(excel_file)
