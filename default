@@ -1,88 +1,32 @@
-import pandas as pd
-from snowflake_connectivity import get_snowflake_connection
-
-# Function to check default values in the target table when source data is missing
-def check_default_values(conn, source_schema, source_table, target_schema, target_table, src_column, trg_column, default_value):
-    query = f"""
-        SELECT 
-            src.id AS source_id,  -- Assuming 'id' is the join key
-            src.{src_column} AS source_column,
-            trg.{trg_column} AS target_column,
+SELECT 
+    src.id AS source_id, 
+    src.source_column_1,  
+    trg.target_column_1,
+    CASE 
+        WHEN src.source_column_1 IS NULL THEN
             CASE
-                WHEN src.{src_column} IS NULL OR src.{src_column} = '' THEN
-                    CASE
-                        WHEN trg.{trg_column} = '{default_value}' THEN 'Default Value Populated'
-                        ELSE 'Default Value Missing'
-                    END
-                ELSE 'Source Data Present'
-            END AS validation_status
-        FROM 
-            {source_schema}.{source_table} src
-        LEFT JOIN 
-            {target_schema}.{target_table} trg
-        ON 
-            src.id = trg.id  -- Ensure you adjust the join condition appropriately
-    """
-    
-    cur = conn.cursor()
-    cur.execute(query)
-    results = cur.fetchall()
-    cur.close()
+                WHEN trg.target_column_1 = 'DefaultValue1' THEN 'Default Value Populated'
+                ELSE 'Default Value Missing'
+            END
+        ELSE 'Source Data Present'
+    END AS validation_status_1,
 
-    # Collect validation results
-    validation_results = []
-    for row in results:
-        validation_results.append({
-            'source_id': row[0],
-            'source_column': row[1],
-            'target_column': row[2],
-            'validation_status': row[3],
-            'column_name': src_column  # Add column name for easier tracking
-        })
+    src.source_column_2,
+    trg.target_column_2,
+    CASE 
+        WHEN src.source_column_2 IS NULL THEN
+            CASE
+                WHEN trg.target_column_2 = 'DefaultValue2' THEN 'Default Value Populated'
+                ELSE 'Default Value Missing'
+            END
+        ELSE 'Source Data Present'
+    END AS validation_status_2
 
-    # Convert results to a DataFrame
-    df_results = pd.DataFrame(validation_results, columns=['source_id', 'source_column', 'target_column', 'validation_status', 'column_name'])
-    return df_results
-
-# Function to read column mappings and default values from Excel
-def read_column_mappings(excel_file):
-    df = pd.read_excel(excel_file)
-    src_columns = df['Source Column'].tolist()
-    trg_columns = df['Target Column'].tolist()
-    default_values = df['Defaulat value'].tolist()
-    return src_columns, trg_columns, default_values
-
-# Main function to integrate with the existing framework
-def main(excel_file):
-    # Get Snowflake connection and schema details
-    conn, database_name, source_schema, source_table, target_schema, target_table = get_snowflake_connection('config.json')
-
-    # Read the source column, target column, and default values from Excel
-    src_columns, trg_columns, default_values = read_column_mappings(excel_file)
-
-    all_results = []
-    
-    # Loop over each source-target column pair and default value
-    for src_column, trg_column, default_value in zip(src_columns, trg_columns, default_values):
-        # Perform default value validation for each column pair
-        df_results = check_default_values(conn, source_schema, source_table, target_schema, target_table, src_column, trg_column, default_value)
-        all_results.append(df_results)
-
-    # Combine all results into one DataFrame
-    final_results = pd.concat(all_results, ignore_index=True)
-
-    # Print the results to the console
-    print(final_results)
-
-    # Write the results to an Excel file
-    output_file = 'default_value_validation_results.xlsx'
-    final_results.to_excel(output_file, index=False)
-
-    print(f"\nValidation results written to {output_file}")
-
-    # Close the Snowflake connection
-    conn.close()
-
-if __name__ == "__main__":
-    excel_file = input("Please provide the Excel file path: ")
-    main(excel_file)
+FROM 
+    source_table src
+LEFT JOIN 
+    target_table trg 
+ON 
+    src.id = trg.id
+ORDER BY 
+    src.id;
