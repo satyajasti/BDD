@@ -1,0 +1,88 @@
+import pandas as pd
+from snowflake_connectivity import get_snowflake_connection
+
+# Function to get column names from a specific table
+def get_columns_from_table(conn, schema_name, table_name):
+    query = f"""
+        SELECT COLUMN_NAME
+        FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = '{schema_name}'
+        AND TABLE_NAME = '{table_name}'
+    """
+    cur = conn.cursor()
+    cur.execute(query)
+    columns = [row[0] for row in cur.fetchall()]
+    cur.close()
+    return columns
+
+# Function to calculate max length of data in a column
+def get_max_length_query(column_name, schema_name, table_name):
+    return f"MAX(LENGTH({column_name})) AS max_length_{column_name}"
+
+# Function to compare column lengths between source and target
+def compare_column_lengths(conn, source_schema, source_table, target_schema, target_table, columns):
+    comparison_results = []
+    
+    for column in columns:
+        # Query to get max length of the column from source
+        source_query = f"""
+            SELECT {get_max_length_query(column, source_schema, source_table)}
+            FROM {source_schema}.{source_table}
+        """
+        cur = conn.cursor()
+        cur.execute(source_query)
+        source_max_length = cur.fetchone()[0]
+
+        # Query to get max length of the column from target
+        target_query = f"""
+            SELECT {get_max_length_query(column, target_schema, target_table)}
+            FROM {target_schema}.{target_table}
+        """
+        cur.execute(target_query)
+        target_max_length = cur.fetchone()[0]
+        cur.close()
+
+        # Compare the lengths and identify truncation
+        if source_max_length > target_max_length:
+            status = 'Truncated'
+        else:
+            status = 'Not Truncated'
+
+        # Append the result
+        comparison_results.append({
+            'Column': column,
+            'Source_Max_Length': source_max_length,
+            'Target_Max_Length': target_max_length,
+            'Status': status
+        })
+
+    return comparison_results
+
+# Main function to run the comparison and output results
+def main():
+    # Connect to Snowflake (assuming connection details are in config.json)
+    conn, database_name, source_schema, source_table, target_schema, target_table = get_snowflake_connection('config.json')
+    
+    # Get column names from the source table (assume source and target have the same structure)
+    columns = get_columns_from_table(conn, source_schema, source_table)
+
+    # Compare the column lengths between source and target
+    comparison_results = compare_column_lengths(conn, source_schema, source_table, target_schema, target_table, columns)
+
+    # Create a DataFrame from the results
+    df_comparison = pd.DataFrame(comparison_results)
+
+    # Print the results to the console
+    print(df_comparison)
+
+    # Write the results to an Excel file
+    output_file = 'column_length_comparison.xlsx'
+    df_comparison.to_excel(output_file, index=False)
+
+    print(f"\nComparison results written to {output_file}")
+
+    # Close the Snowflake connection
+    conn.close()
+
+if __name__ == "__main__":
+    main()
