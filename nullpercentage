@@ -8,16 +8,22 @@ def get_column_metadata(conn, schema_name, table_name):
         SELECT 
             c.COLUMN_NAME, 
             c.COLUMN_DEFAULT, 
-            c.IS_NULLABLE, 
-            CASE WHEN kcu.COLUMN_NAME IS NOT NULL THEN 'Yes' ELSE 'No' END AS is_primary_key
+            c.IS_NULLABLE,
+            CASE WHEN tc.CONSTRAINT_TYPE = 'PRIMARY KEY' THEN 'Yes' ELSE 'No' END AS is_primary_key
         FROM 
             INFORMATION_SCHEMA.COLUMNS c
         LEFT JOIN 
-            INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu
+            INFORMATION_SCHEMA.CONSTRAINT_COLUMN_USAGE ccu
         ON 
-            c.COLUMN_NAME = kcu.COLUMN_NAME 
-            AND c.TABLE_NAME = kcu.TABLE_NAME
-            AND c.TABLE_SCHEMA = kcu.TABLE_SCHEMA
+            c.COLUMN_NAME = ccu.COLUMN_NAME
+            AND c.TABLE_NAME = ccu.TABLE_NAME
+            AND c.TABLE_SCHEMA = ccu.TABLE_SCHEMA
+        LEFT JOIN 
+            INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc
+        ON 
+            ccu.CONSTRAINT_NAME = tc.CONSTRAINT_NAME
+            AND ccu.TABLE_NAME = tc.TABLE_NAME
+            AND ccu.TABLE_SCHEMA = tc.TABLE_SCHEMA
         WHERE 
             c.TABLE_SCHEMA = '{schema_name}' 
             AND c.TABLE_NAME = '{table_name}'
