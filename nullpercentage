@@ -2,19 +2,42 @@ import snowflake.connector
 import pandas as pd
 from snowflake_connection import get_snowflake_connection
 
-# Function to retrieve column names from the specified table
-def get_columns_from_table(conn, schema_name, table_name):
+# Function to retrieve column metadata (including default values, PKs, and mandatory keys) from INFORMATION_SCHEMA
+def get_column_metadata(conn, schema_name, table_name):
     query = f"""
-        SELECT COLUMN_NAME
-        FROM INFORMATION_SCHEMA.COLUMNS
-        WHERE TABLE_SCHEMA = '{schema_name}'
-        AND TABLE_NAME = '{table_name}'
+        SELECT 
+            c.COLUMN_NAME, 
+            c.COLUMN_DEFAULT, 
+            c.IS_NULLABLE, 
+            CASE WHEN kcu.COLUMN_NAME IS NOT NULL THEN 'Yes' ELSE 'No' END AS is_primary_key
+        FROM 
+            INFORMATION_SCHEMA.COLUMNS c
+        LEFT JOIN 
+            INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu
+        ON 
+            c.COLUMN_NAME = kcu.COLUMN_NAME 
+            AND c.TABLE_NAME = kcu.TABLE_NAME
+            AND c.TABLE_SCHEMA = kcu.TABLE_SCHEMA
+        WHERE 
+            c.TABLE_SCHEMA = '{schema_name}' 
+            AND c.TABLE_NAME = '{table_name}'
     """
     cur = conn.cursor()
     cur.execute(query)
-    columns = [row[0] for row in cur.fetchall()]
+    columns_metadata = cur.fetchall()
     cur.close()
-    return columns
+
+    # Convert the result to a list of dictionaries
+    columns_info = []
+    for row in columns_metadata:
+        columns_info.append({
+            'column_name': row[0],
+            'default_value': row[1],
+            'mandatory_key': 'No' if row[2] == 'YES' else 'Yes',  # Mandatory if IS_NULLABLE is 'NO'
+            'is_primary_key': row[3]
+        })
+    
+    return columns_info
 
 # Function to calculate total count, non-null count, non-null percentage, null count, and null percentage for each column
 def calculate_null_stats(conn, schema_name, table_name, columns):
@@ -55,18 +78,28 @@ def main():
     # Get connection, schema, and table name from JSON config
     conn, database_name, schema_name, table_name = get_snowflake_connection('config.json')
 
-    # Get all column names from the table
-    columns = get_columns_from_table(conn, schema_name, table_name)
+    # Get all column metadata (default value, PK, mandatory key)
+    columns_metadata = get_column_metadata(conn, schema_name, table_name)
+
+    # Extract just the column names for the null stats calculation
+    column_names = [col['column_name'] for col in columns_metadata]
 
     # Calculate NULL stats for each column
-    null_stats = calculate_null_stats(conn, schema_name, table_name, columns)
+    null_stats = calculate_null_stats(conn, schema_name, table_name, column_names)
+
+    # Merge null stats with column metadata (default value, PK, mandatory key)
+    for col_info in columns_metadata:
+        for null_stat in null_stats:
+            if col_info['column_name'] == null_stat['column_name']:
+                col_info.update(null_stat)
+                break
 
     # Convert the results to a Pandas DataFrame
-    df = pd.DataFrame(null_stats)
+    df = pd.DataFrame(columns_metadata)
 
     # Write the DataFrame to an Excel file
-    output_file = 'null_stats_report.xlsx'
-    df.to_excel(output_file, sheet_name='Null_Stats', index=False)
+    output_file = 'null_stats_with_metadata_report.xlsx'
+    df.to_excel(output_file, sheet_name='Null_Stats_With_Metadata', index=False)
 
     print(f"\nResults have also been written to {output_file}")
 
