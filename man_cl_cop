@@ -1,0 +1,81 @@
+import pandas as pd
+from snowflake_connectivity import get_snowflake_connection
+
+# Function to read column mappings from Excel
+def read_column_mappings(excel_file):
+    # Read the Excel file into a DataFrame
+    df = pd.read_excel(excel_file)
+    
+    # Extract source and target column names
+    src_columns = df['SRC_clmr'].tolist()
+    trg_columns = df['TRG_clmn'].tolist()
+    
+    return src_columns, trg_columns
+
+# Function to compare the source and target columns
+def compare_columns(conn, source_schema, source_table, target_schema, target_table, src_columns, trg_columns):
+    comparison_results = []
+    
+    for src_col, trg_col in zip(src_columns, trg_columns):
+        # Query to compare the source and target columns
+        query = f"""
+            SELECT 
+                src.{src_col} AS source_{src_col}, 
+                trg.{trg_col} AS target_{trg_col}, 
+                CASE 
+                    WHEN src.{src_col} != trg.{trg_col} THEN 'Mismatch'
+                    ELSE 'Match'
+                END AS status
+            FROM {source_schema}.{source_table} src
+            LEFT JOIN {target_schema}.{target_table} trg
+            ON src.id = trg.id  -- Use your actual join condition
+        """
+        
+        # Execute the query and fetch the results
+        cur = conn.cursor()
+        cur.execute(query)
+        rows = cur.fetchall()
+        
+        # Process the results and append to comparison results
+        for row in rows:
+            comparison_results.append({
+                'Source Column': src_col,
+                'Target Column': trg_col,
+                'Source Value': row[0],
+                'Target Value': row[1],
+                'Status': row[2]
+            })
+        
+        cur.close()
+    
+    return comparison_results
+
+# Main function to run the comparison and output results
+def main():
+    # Connect to Snowflake (assuming connection details are in config.json)
+    conn, database_name, source_schema, source_table, target_schema, target_table = get_snowflake_connection('config.json')
+
+    # Read the column mappings from the provided Excel file
+    excel_file = 'column_mappings.xlsx'  # Replace with your actual Excel file name
+    src_columns, trg_columns = read_column_mappings(excel_file)
+
+    # Compare the source and target columns
+    comparison_results = compare_columns(conn, source_schema, source_table, target_schema, target_table, src_columns, trg_columns)
+
+    # Create a DataFrame from the results
+    df_comparison = pd.DataFrame(comparison_results)
+
+    # Print the results to the console
+    print(df_comparison)
+
+    # Write the results to an Excel file
+    output_file = 'column_comparison_results.xlsx'
+    df_comparison.to_excel(output_file, index=False)
+
+    print(f"\nComparison results written to {output_file}")
+
+    # Close the Snowflake connection
+    conn.close()
+
+if __name__ == "__main__":
+    main()
