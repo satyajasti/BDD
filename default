@@ -1,0 +1,64 @@
+import pandas as pd
+from snowflake_connectivity import get_snowflake_connection
+
+# Function to check default values in the target table when source data is missing
+def check_default_values(conn, source_schema, source_table, target_schema, target_table, src_column, trg_column, default_value):
+    query = f"""
+        SELECT 
+            src.id AS source_id,  -- Assuming you have a unique key column
+            src.{src_column} AS source_column,    
+            trg.{trg_column} AS target_column,    
+            CASE
+                WHEN src.{src_column} IS NULL OR src.{src_column} = '' THEN
+                    CASE
+                        WHEN trg.{trg_column} = '{default_value}' THEN 'Default Value Populated'
+                        ELSE 'Default Value Missing'
+                    END
+                ELSE 'Source Data Present'
+            END AS validation_status
+        FROM 
+            {source_schema}.{source_table} src
+        LEFT JOIN 
+            {target_schema}.{target_table} trg
+        ON 
+            src.id = trg.id
+    """
+    
+    cur = conn.cursor()
+    cur.execute(query)
+    results = cur.fetchall()
+    cur.close()
+
+    # Create a DataFrame from the results
+    columns = ['source_id', 'source_column', 'target_column', 'validation_status']
+    df_results = pd.DataFrame(results, columns=columns)
+
+    return df_results
+
+# Main function to run the check and output results
+def main():
+    # Connect to Snowflake (assuming connection details are in config.json)
+    conn, database_name, source_schema, source_table, target_schema, target_table = get_snowflake_connection('config.json')
+
+    # Define the source column, target column, and default value to check
+    src_column = 'source_column'
+    trg_column = 'target_column'
+    default_value = 'DefaultValue'
+
+    # Run the default value check
+    df_results = check_default_values(conn, source_schema, source_table, target_schema, target_table, src_column, trg_column, default_value)
+
+    # Print the results to the console
+    print(df_results)
+
+    # Write the results to an Excel file
+    output_file = 'default_value_validation.xlsx'
+    df_results.to_excel(output_file, index=False)
+
+    print(f"\nValidation results written to {output_file}")
+
+    # Close the Snowflake connection
+    conn.close()
+
+if __name__ == "__main__":
+    main()
