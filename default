@@ -1,91 +1,82 @@
 import pandas as pd
 from snowflake_connectivity import get_snowflake_connection
 
-# Function to get column names from Snowflake's INFORMATION_SCHEMA
-def get_column_names(conn, schema_name, table_name):
+# Function to check default values in the target table when source data is missing
+def check_default_values(conn, source_schema, source_table, target_schema, target_table, src_column, trg_column, default_value):
     query = f"""
-        SELECT COLUMN_NAME 
-        FROM INFORMATION_SCHEMA.COLUMNS
-        WHERE TABLE_SCHEMA = '{schema_name}' AND TABLE_NAME = '{table_name}'
+        SELECT 
+            src.id AS source_id,  -- Assuming 'id' is the join key
+            src.{src_column} AS source_column,
+            trg.{trg_column} AS target_column,
+            CASE
+                WHEN src.{src_column} IS NULL OR src.{src_column} = '' THEN
+                    CASE
+                        WHEN trg.{trg_column} = '{default_value}' THEN 'Default Value Populated'
+                        ELSE 'Default Value Missing'
+                    END
+                ELSE 'Source Data Present'
+            END AS validation_status
+        FROM 
+            {source_schema}.{source_table} src
+        LEFT JOIN 
+            {target_schema}.{target_table} trg
+        ON 
+            src.id = trg.id  -- Ensure you adjust the join condition appropriately
     """
+    
     cur = conn.cursor()
     cur.execute(query)
-    columns = [row[0] for row in cur.fetchall()]  # Fetch all column names
+    results = cur.fetchall()
     cur.close()
-    return columns
 
-# Function to check default values in the target table when source data is missing
-def check_default_values(conn, source_schema, source_table, target_schema, target_table, default_value):
-    # Dynamically get column names from INFORMATION_SCHEMA
-    source_columns = get_column_names(conn, source_schema, source_table)
-    target_columns = get_column_names(conn, target_schema, target_table)
-
-    # Assuming both source and target tables have the same column names
-    if len(source_columns) == 0 or len(target_columns) == 0:
-        raise ValueError("Source or Target columns could not be fetched.")
-
+    # Collect validation results
     validation_results = []
-
-    # Compare each source column to the corresponding target column
-    for src_column, trg_column in zip(source_columns, target_columns):
-        query = f"""
-            SELECT 
-                src.id AS source_id,  -- Assuming 'id' is the join key
-                src.{src_column} AS source_column,
-                trg.{trg_column} AS target_column,
-                CASE
-                    WHEN src.{src_column} IS NULL OR src.{src_column} = '' THEN
-                        CASE
-                            WHEN trg.{trg_column} = '{default_value}' THEN 'Default Value Populated'
-                            ELSE 'Default Value Missing'
-                        END
-                    ELSE 'Source Data Present'
-                END AS validation_status
-            FROM 
-                {source_schema}.{source_table} src
-            LEFT JOIN 
-                {target_schema}.{target_table} trg
-            ON 
-                src.id = trg.id  -- Ensure you adjust the join condition appropriately
-        """
-        
-        cur = conn.cursor()
-        cur.execute(query)
-        results = cur.fetchall()
-        cur.close()
-
-        # Collect the validation results
-        for row in results:
-            validation_results.append({
-                'source_id': row[0],
-                'source_column': row[1],
-                'target_column': row[2],
-                'validation_status': row[3],
-                'column_name': src_column  # Add the column name for easier tracking
-            })
+    for row in results:
+        validation_results.append({
+            'source_id': row[0],
+            'source_column': row[1],
+            'target_column': row[2],
+            'validation_status': row[3],
+            'column_name': src_column  # Add column name for easier tracking
+        })
 
     # Convert results to a DataFrame
     df_results = pd.DataFrame(validation_results, columns=['source_id', 'source_column', 'target_column', 'validation_status', 'column_name'])
-
     return df_results
 
+# Function to read column mappings and default values from Excel
+def read_column_mappings(excel_file):
+    df = pd.read_excel(excel_file)
+    src_columns = df['Source Column'].tolist()
+    trg_columns = df['Target Column'].tolist()
+    default_values = df['Defaulat value'].tolist()
+    return src_columns, trg_columns, default_values
+
 # Main function to integrate with the existing framework
-def main():
-    # Get the Snowflake connection and schema details
+def main(excel_file):
+    # Get Snowflake connection and schema details
     conn, database_name, source_schema, source_table, target_schema, target_table = get_snowflake_connection('config.json')
 
-    # Define the default value to check (this can be modified or passed dynamically)
-    default_value = 'DefaultValue'  # Replace with the actual default value
+    # Read the source column, target column, and default values from Excel
+    src_columns, trg_columns, default_values = read_column_mappings(excel_file)
 
-    # Perform default value validation
-    df_results = check_default_values(conn, source_schema, source_table, target_schema, target_table, default_value)
+    all_results = []
+    
+    # Loop over each source-target column pair and default value
+    for src_column, trg_column, default_value in zip(src_columns, trg_columns, default_values):
+        # Perform default value validation for each column pair
+        df_results = check_default_values(conn, source_schema, source_table, target_schema, target_table, src_column, trg_column, default_value)
+        all_results.append(df_results)
+
+    # Combine all results into one DataFrame
+    final_results = pd.concat(all_results, ignore_index=True)
 
     # Print the results to the console
-    print(df_results)
+    print(final_results)
 
     # Write the results to an Excel file
     output_file = 'default_value_validation_results.xlsx'
-    df_results.to_excel(output_file, index=False)
+    final_results.to_excel(output_file, index=False)
 
     print(f"\nValidation results written to {output_file}")
 
@@ -93,4 +84,5 @@ def main():
     conn.close()
 
 if __name__ == "__main__":
-    main()
+    excel_file = input("Please provide the Excel file path: ")
+    main(excel_file)
