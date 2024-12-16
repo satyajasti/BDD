@@ -34,7 +34,7 @@ def find_rows_with_same_chars(df, columns):
         value = str(value).strip()
         return len(value) > 0 and all(char == value[0] for char in value)
     
-    # Use apply() with a lambda function to avoid FutureWarning
+    # Apply the function to the specified columns only
     filtered_df = df[df[columns].apply(lambda col: col.apply(is_all_chars_same)).any(axis=1)]
     return filtered_df
 
@@ -58,12 +58,19 @@ if __name__ == "__main__":
         all_columns = get_table_columns(conn, database_name, schema_name, table_name)
         print(f"Columns in table: {all_columns}")
 
+        # Normalize columns for case sensitivity
+        all_columns_normalized = [col.lower() for col in all_columns]
+        columns_to_validate = [col.lower() for col in columns_to_validate]
+        
         # Validate if columns from JSON exist in the table
-        columns_to_validate = [col for col in columns_to_validate if col in all_columns]
-        if not columns_to_validate:
+        valid_columns = [col for col in columns_to_validate if col in all_columns_normalized]
+        if not valid_columns:
+            print("No valid columns found to validate. Check JSON configuration.")
+            print(f"Columns in JSON: {columns_to_validate}")
+            print(f"Available columns: {all_columns_normalized}")
             raise ValueError("No valid columns to validate. Check JSON configuration.")
 
-        print(f"Columns to validate: {columns_to_validate}")
+        print(f"Columns to validate: {valid_columns}")
         
         # Step 4: Generate and print the full query
         query = f"SELECT * FROM {database_name}.{schema_name}.{table_name}"
@@ -82,7 +89,7 @@ if __name__ == "__main__":
         
             # Step 6: Find rows with identical characters in specified columns
             print("\nValidating rows where specified columns have all identical characters...")
-            filtered_rows = find_rows_with_same_chars(df, columns_to_validate)
+            filtered_rows = find_rows_with_same_chars(df, valid_columns)
         
             if filtered_rows.empty:
                 print("No rows found where specified columns have all identical characters.")
