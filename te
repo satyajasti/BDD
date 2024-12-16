@@ -1,11 +1,85 @@
-MBR_PCP_DT	Expected Output	Reason
-2024-01-01	2024-01-01	Within valid range
-1999-11-26	1999-11-26	Lower boundary
-2029-11-26	2029-11-26	Upper boundary
-1999-11-25	1111-01-01	Before lower boundary
-2029-11-27	1111-01-01	After upper boundary
-NULL	1111-01-01	Null values default to sentinel
-1800-01-01	1111-01-01	Extremely past date
-3000-01-01	1111-01-01	Extremely future date
-2024-11-26	2024-11-26	Current date
-2028-02-29	2028-02-29	Valid leap year date
+import pandas as pd
+import re
+from snowflake_connection import get_snowflake_connection, read_connection_details
+
+# Function to fetch all columns dynamically for a table
+def get_table_columns(conn, schema_name, table_name):
+    query = f"""
+        SELECT COLUMN_NAME 
+        FROM {schema_name}.INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_NAME = '{table_name}'
+    """
+    cur = conn.cursor()
+    cur.execute(query)
+    columns = [row[0] for row in cur.fetchall()]
+    cur.close()
+    return columns
+
+# Function to validate rows where all characters in any column are identical
+def find_rows_with_same_chars(df):
+    """
+    Identify rows where all characters in a column are the same.
+    
+    Args:
+        df (pd.DataFrame): Input DataFrame.
+        
+    Returns:
+        pd.DataFrame: Filtered rows where any column has all identical characters.
+    """
+    def is_all_chars_same(value):
+        return bool(re.fullmatch(r'(.)\1*', str(value)))  # Check for repeated characters
+    
+    # Apply the check to all columns and filter rows
+    filtered_df = df[df.applymap(is_all_chars_same).any(axis=1)]
+    return filtered_df
+
+if __name__ == "__main__":
+    # Step 1: Read configuration
+    config = read_connection_details("config.json")
+    table_name = config.get("table_name")  # Get table name dynamically
+    schema_name = config.get("snowflake", {}).get("schema", "")
+    
+    if not table_name or not schema_name:
+        raise ValueError("Table name or schema name is missing in the configuration file.")
+    
+    # Step 2: Establish Snowflake connection
+    conn, _, _, _ = get_snowflake_connection("config.json")
+
+    try:
+        # Step 3: Fetch column names dynamically
+        print(f"Fetching columns for table: {table_name}")
+        columns = get_table_columns(conn, schema_name, table_name)
+        print(f"Columns in table: {columns}")
+        
+        # Step 4: Fetch table data
+        query = f"SELECT * FROM {schema_name}.{table_name}"
+        print(f"Executing query: {query}")
+        df = pd.read_sql(query, conn)
+        
+        if df.empty:
+            print("No data found in the table.")
+        else:
+            print("Data fetched successfully.")
+            print(df.head())
+        
+            # Step 5: Find rows with identical characters in any column
+            print("Validating rows where all characters are identical...")
+            filtered_rows = find_rows_with_same_chars(df)
+        
+            if filtered_rows.empty:
+                print("No rows found where all characters in any column are identical.")
+            else:
+                print("Rows found where all characters in any column are identical:")
+                print(filtered_rows)
+        
+                # Step 6: Write results to Excel
+                output_file = f"{table_name}_identical_chars.xlsx"
+                filtered_rows.to_excel(output_file, index=False)
+                print(f"Results written to: {output_file}")
+    
+    except Exception as e:
+        print(f"Error occurred: {e}")
+    
+    finally:
+        conn.close()
+        print("Snowflake connection closed.")
