@@ -1,56 +1,90 @@
-def find_columns_with_identical_chars(df, columns):
+import pandas as pd
+from snowflake_connection import get_snowflake_connection
+import re
+
+def get_column_names(conn, database, schema, table_name):
     """
-    Identify columns where values have all identical characters,
-    excluding single-character values and null/empty values.
+    Dynamically fetch column names for a given table.
     """
-    def has_identical_chars(value):
-        """
-        Check if all characters in a string are the same.
-        Exclude single-character values and null/empty values.
-        """
-        if pd.isnull(value) or str(value).strip() == "":
-            return False  # Ignore null or empty values
+    query = f"SHOW COLUMNS IN {database}.{schema}.{table_name}"
+    cur = conn.cursor()
+    cur.execute(query)
+    columns = [row[2] for row in cur.fetchall()]  # Column names are in the third position
+    cur.close()
+    return columns
 
-        value = str(value).strip()
-        return len(value) > 1 and len(set(value)) == 1  # Multi-character identical values only
-
-    # Filter columns to check if any value satisfies the condition
-    columns_with_identical_chars = []
-
+def generate_identical_columns_query(database, schema, table, columns):
+    """
+    Generate SQL query to identify columns with identical values (excluding NULLs and single characters).
+    """
+    conditions = []
     for col in columns:
-        if df[col].apply(has_identical_chars).any():  # Check if any value satisfies the condition
-            columns_with_identical_chars.append(col)
+        condition = f"({col} IS NOT NULL AND LENGTH({col}) > 1 AND REGEXP_LIKE({col}, '^(.)\\1*$'))"
+        conditions.append(condition)
 
-    # Filter rows where any column contains identical characters
-    if columns_with_identical_chars:
-        filtered_df = df[df[columns_with_identical_chars].apply(lambda col: col.apply(has_identical_chars)).any(axis=1)]
-        return columns_with_identical_chars, filtered_df
-    else:
-        return [], pd.DataFrame()  # Return empty DataFrame if no columns satisfy the condition
+    query = f"SELECT * FROM {database}.{schema}.{table} WHERE {' OR '.join(conditions)}"
+    return query
 
+def find_identical_columns(df):
+    """
+    Identify columns where all non-NULL values have identical characters.
+    """
+    identical_columns = []
+    for col in df.columns:
+        non_null_values = df[col].dropna().astype(str).str.strip()
+        if not non_null_values.empty and non_null_values.apply(lambda x: len(set(x)) == 1 and len(x) > 1).all():
+            identical_columns.append(col)
+    return identical_columns
 
+if __name__ == "__main__":
+    try:
+        # Step 1: Establish Snowflake connection
+        config_file = "config.json"
+        print("Connecting to Snowflake...")
+        conn, database_name, schema_name = get_snowflake_connection(config_file)
 
+        # Step 2: Read table name from JSON
+        table_name = read_connection_details(config_file).get("table_name")
+        if not table_name:
+            raise ValueError("Table name not specified in the configuration file.")
 
+        print(f"Fetching column names for table: {table_name}")
+        columns = get_column_names(conn, database_name, schema_name, table_name)
+        print(f"Columns fetched dynamically: {columns}")
 
+        # Step 3: Fetch table data
+        query_data = f"SELECT * FROM {database_name}.{schema_name}.{table_name}"
+        print(f"Fetching data using query: {query_data}")
+        df = pd.read_sql(query_data, conn)
 
+        if df.empty:
+            print("No data found in the table.")
+        else:
+            print("Data fetched successfully.")
 
+            # Step 4: Identify identical columns
+            print("Checking for columns with identical values...")
+            identical_columns = find_identical_columns(df)
 
-# Step 6: Find columns and rows with identical characters
-print("\nChecking for columns with identical multi-character values...")
-columns_with_identical_chars, filtered_rows = find_columns_with_identical_chars(df, valid_columns)
+            if not identical_columns:
+                print("No columns found where values have identical characters.")
+            else:
+                print(f"Identical columns found: {identical_columns}")
 
-if not columns_with_identical_chars:
-    print("No columns found where values have identical multi-character values.")
-else:
-    print(f"Columns with identical multi-character values: {columns_with_identical_chars}")
+                # Step 5: Generate and print SQL query
+                sql_query = generate_identical_columns_query(database_name, schema_name, table_name, identical_columns)
+                print("\nGenerated SQL Query to Identify Columns with Identical Values:")
+                print(sql_query)
 
-    if filtered_rows.empty:
-        print("No rows found where values have identical multi-character values.")
-    else:
-        print("\nRows where specified columns have identical multi-character values:")
-        print(filtered_rows)
+                # Step 6: Write results to Excel
+                output_file = "identical_columns_results.xlsx"
+                with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
+                    pd.DataFrame({"SQL Query": [sql_query]}).to_excel(writer, sheet_name="SQL_Query", index=False)
+                    pd.DataFrame({"Identical Columns": identical_columns}).to_excel(writer, sheet_name="Identical_Columns", index=False)
+                print(f"Results written to: {output_file}")
 
-        # Step 7: Write results to Excel
-        output_file = f"{table_name}_identical_chars.xlsx"
-        filtered_rows.to_excel(output_file, index=False)
-        print(f"\nResults written to: {output_file}")
+    except Exception as e:
+        print(f"Error: {e}")
+    finally:
+        print("Closing Snowflake connection.")
+        conn.close()
