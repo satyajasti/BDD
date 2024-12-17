@@ -1,110 +1,56 @@
-import pandas as pd
-from snowflake_connection import get_snowflake_connection, read_connection_details
-import re
-
-# Function to fetch all columns dynamically for a table
-def get_table_columns(conn, database_name, schema_name, table_name):
-    query = f"""
-        SELECT COLUMN_NAME 
-        FROM {database_name}.INFORMATION_SCHEMA.COLUMNS
-        WHERE TABLE_SCHEMA = '{schema_name}' AND TABLE_NAME = '{table_name}'
+def find_columns_with_identical_chars(df, columns):
     """
-    cur = conn.cursor()
-    cur.execute(query)
-    columns = [row[0] for row in cur.fetchall()]
-    cur.close()
-    return columns
-
-# Function to validate rows where all characters in specific columns are identical
-def find_rows_with_same_chars(df, columns):
+    Identify columns where values have all identical characters,
+    excluding single-character values and null/empty values.
     """
-    Identify rows where specified columns have all identical characters.
-
-    Args:
-        df (pd.DataFrame): Input DataFrame.
-        columns (list): List of columns to validate.
-
-    Returns:
-        pd.DataFrame: Filtered rows where any specified column has all identical characters.
-    """
-    def is_all_chars_same(value):
+    def has_identical_chars(value):
         """
         Check if all characters in a string are the same.
+        Exclude single-character values and null/empty values.
         """
+        if pd.isnull(value) or str(value).strip() == "":
+            return False  # Ignore null or empty values
+
         value = str(value).strip()
-        return len(value) > 0 and all(char == value[0] for char in value)
-    
-    # Apply the function to the specified columns only
-    filtered_df = df[df[columns].apply(lambda col: col.apply(is_all_chars_same)).any(axis=1)]
-    return filtered_df
+        return len(value) > 1 and len(set(value)) == 1  # Multi-character identical values only
 
-if __name__ == "__main__":
-    # Step 1: Read configuration
-    config = read_connection_details("config.json")
-    table_name = config.get("table_name")
-    schema_name = config.get("snowflake", {}).get("schema", "")
-    database_name = config.get("snowflake", {}).get("database", "")
-    columns_to_validate = config.get("columns_to_validate", [])
+    # Filter columns to check if any value satisfies the condition
+    columns_with_identical_chars = []
 
-    if not table_name or not schema_name or not database_name:
-        raise ValueError("Table name, schema name, or database name is missing in the configuration file.")
+    for col in columns:
+        if df[col].apply(has_identical_chars).any():  # Check if any value satisfies the condition
+            columns_with_identical_chars.append(col)
 
-    # Step 2: Establish Snowflake connection
-    conn, _, _, _ = get_snowflake_connection("config.json")
+    # Filter rows where any column contains identical characters
+    if columns_with_identical_chars:
+        filtered_df = df[df[columns_with_identical_chars].apply(lambda col: col.apply(has_identical_chars)).any(axis=1)]
+        return columns_with_identical_chars, filtered_df
+    else:
+        return [], pd.DataFrame()  # Return empty DataFrame if no columns satisfy the condition
 
-    try:
-        # Step 3: Fetch column names dynamically
-        print(f"Fetching columns for table: {table_name}")
-        all_columns = get_table_columns(conn, database_name, schema_name, table_name)
-        print(f"Columns in table: {all_columns}")
 
-        # Normalize columns for case sensitivity
-        all_columns_normalized = [col.lower() for col in all_columns]
-        columns_to_validate = [col.lower() for col in columns_to_validate]
-        
-        # Validate if columns from JSON exist in the table
-        valid_columns = [col for col in columns_to_validate if col in all_columns_normalized]
-        if not valid_columns:
-            print("No valid columns found to validate. Check JSON configuration.")
-            print(f"Columns in JSON: {columns_to_validate}")
-            print(f"Available columns: {all_columns_normalized}")
-            raise ValueError("No valid columns to validate. Check JSON configuration.")
 
-        print(f"Columns to validate: {valid_columns}")
-        
-        # Step 4: Generate and print the full query
-        query = f"SELECT * FROM {database_name}.{schema_name}.{table_name}"
-        print(f"\nGenerated Query:\n{query}")
-        
-        # Step 5: Fetch table data
-        print("\nFetching table data...")
-        df = pd.read_sql(query, conn)
-        
-        if df.empty:
-            print("No data found in the table.")
-        else:
-            print("Data fetched successfully.")
-            print("\nFirst few rows of the table:")
-            print(df.head())
-        
-            # Step 6: Find rows with identical characters in specified columns
-            print("\nValidating rows where specified columns have all identical characters...")
-            filtered_rows = find_rows_with_same_chars(df, valid_columns)
-        
-            if filtered_rows.empty:
-                print("No rows found where specified columns have all identical characters.")
-            else:
-                print("\nRows where specified columns have all identical characters:")
-                print(filtered_rows)
-        
-                # Step 7: Write results to Excel
-                output_file = f"{table_name}_identical_chars.xlsx"
-                filtered_rows.to_excel(output_file, index=False)
-                print(f"\nResults written to: {output_file}")
-    
-    except Exception as e:
-        print(f"Error occurred: {e}")
-    
-    finally:
-        conn.close()
-        print("\nSnowflake connection closed.")
+
+
+
+
+
+# Step 6: Find columns and rows with identical characters
+print("\nChecking for columns with identical multi-character values...")
+columns_with_identical_chars, filtered_rows = find_columns_with_identical_chars(df, valid_columns)
+
+if not columns_with_identical_chars:
+    print("No columns found where values have identical multi-character values.")
+else:
+    print(f"Columns with identical multi-character values: {columns_with_identical_chars}")
+
+    if filtered_rows.empty:
+        print("No rows found where values have identical multi-character values.")
+    else:
+        print("\nRows where specified columns have identical multi-character values:")
+        print(filtered_rows)
+
+        # Step 7: Write results to Excel
+        output_file = f"{table_name}_identical_chars.xlsx"
+        filtered_rows.to_excel(output_file, index=False)
+        print(f"\nResults written to: {output_file}")
