@@ -1,6 +1,5 @@
 import pandas as pd
 from snowflake_connection import get_snowflake_connection, read_connection_details
-import os
 
 def get_column_names(conn, database, schema, table_name):
     """
@@ -59,13 +58,17 @@ if __name__ == "__main__":
         # Step 4: Fetch table data
         query_data = f"SELECT * FROM {database_name}.{schema_name}.{table_name}"
         print(f"\nGenerated Query to Fetch Data:\n{query_data}")
-        df = pd.read_sql(query_data, conn)
 
-        # Output Excel File Named After Table
-        output_file = f"{table_name}.xlsx"
+        # Use a cursor to execute the query and fetch data
+        cur = conn.cursor()
+        cur.execute(query_data)
+        rows = cur.fetchall()
+        columns = [desc[0] for desc in cur.description]  # Extract column names
+        cur.close()
 
-        if df.empty:
+        if not rows:
             print("\nNo data found in the table.")
+            output_file = f"{table_name}.xlsx"
             no_data_message = "No identical characters found"
             with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
                 pd.DataFrame({"Query": [query_data]}).to_excel(writer, sheet_name="Query", index=False)
@@ -73,11 +76,13 @@ if __name__ == "__main__":
             print(f"Results written to: {output_file}")
         else:
             print("Data fetched successfully.")
+            df = pd.DataFrame(rows, columns=columns)
 
             # Step 5: Identify identical columns
             print("\nChecking for columns with identical values...")
             identical_columns = find_identical_columns(df)
 
+            output_file = f"{table_name}.xlsx"
             with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
                 # Write Query
                 pd.DataFrame({"Query": [query_data]}).to_excel(writer, sheet_name="Query", index=False)
