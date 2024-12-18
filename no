@@ -1,17 +1,16 @@
 import pandas as pd
 from snowflake_connection import get_snowflake_connection, read_connection_details
-from sqlalchemy import create_engine
-from snowflake.sqlalchemy import URL
 import os
 
-def get_column_names(engine, database, schema, table_name):
+def get_column_names(conn, database, schema, table_name):
     """
     Dynamically fetch column names for a given table using Snowflake.
     """
     query = f"SHOW COLUMNS IN {database}.{schema}.{table_name}"
-    with engine.connect() as connection:
-        result = connection.execute(query)
-        columns = [row[2] for row in result]  # Column names are in the third position
+    cur = conn.cursor()
+    cur.execute(query)
+    columns = [row[2] for row in cur.fetchall()]  # Column names are in the third position
+    cur.close()
     return columns
 
 def generate_identical_columns_query(database, schema, table, columns):
@@ -39,38 +38,28 @@ def find_identical_columns(df):
 
 if __name__ == "__main__":
     try:
-        # Step 1: Establish Snowflake connection
+        # Step 1: Read configuration details
         config_file = "config.json"
         config = read_connection_details(config_file)
-        snowflake_details = config["snowflake"]
         table_name = config.get("table_name")
 
         if not table_name:
             raise ValueError("Table name not specified in the configuration file.")
 
-        engine = create_engine(URL(
-            account=snowflake_details.get("account"),
-            user=snowflake_details.get("user"),
-            password=snowflake_details.get("password"),
-            database=snowflake_details.get("database"),
-            schema=snowflake_details.get("schema"),
-            warehouse=snowflake_details.get("warehouse"),
-            role=snowflake_details.get("role"),
-            authenticator=snowflake_details.get("authenticator", "externalbrowser")
-        ))
-        print("Snowflake connection established successfully.")
+        # Step 2: Establish connection using existing framework
+        print("Establishing connection to Snowflake...")
+        conn, database_name, schema_name = get_snowflake_connection(config_file)
+        print("Connection established successfully.")
 
-        # Step 2: Dynamically fetch columns
-        database_name = snowflake_details.get("database")
-        schema_name = snowflake_details.get("schema")
+        # Step 3: Dynamically fetch columns
         print(f"Fetching column names for table: {table_name}")
-        columns = get_column_names(engine, database_name, schema_name, table_name)
+        columns = get_column_names(conn, database_name, schema_name, table_name)
         print(f"Columns fetched dynamically: {columns}")
 
-        # Step 3: Fetch table data
+        # Step 4: Fetch table data
         query_data = f"SELECT * FROM {database_name}.{schema_name}.{table_name}"
         print(f"\nGenerated Query to Fetch Data:\n{query_data}")
-        df = pd.read_sql(query_data, engine)
+        df = pd.read_sql(query_data, conn)
 
         # Output Excel File Named After Table
         output_file = f"{table_name}.xlsx"
@@ -85,7 +74,7 @@ if __name__ == "__main__":
         else:
             print("Data fetched successfully.")
 
-            # Step 4: Identify identical columns
+            # Step 5: Identify identical columns
             print("\nChecking for columns with identical values...")
             identical_columns = find_identical_columns(df)
 
@@ -112,4 +101,4 @@ if __name__ == "__main__":
         print(f"Error: {e}")
     finally:
         print("Closing Snowflake connection.")
-        engine.dispose()
+        conn.close()
