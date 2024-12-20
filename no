@@ -1,0 +1,74 @@
+import pandas as pd
+from snowflake_connectivity import get_snowflake_connection, read_connection_details
+
+def check_column_for_identical_characters(conn, database, schema, table_name, column):
+    """
+    Check a single column for identical character patterns.
+    """
+    query = f"""
+    SELECT {column}
+    FROM {database}.{schema}.{table_name}
+    WHERE ({column} IS NOT NULL AND LENGTH({column}) > 1 AND REGEXP_LIKE({column}, '^(.)\\1*$'))
+    """
+    cur = conn.cursor()
+    cur.execute(query)
+    rows = cur.fetchall()
+    cur.close()
+    return rows
+
+def get_all_columns(conn, database, schema, table_name):
+    """
+    Fetch all column names for the given table.
+    """
+    query = f"SHOW COLUMNS IN {database}.{schema}.{table_name}"
+    cur = conn.cursor()
+    cur.execute(query)
+    columns = [row[2] for row in cur.fetchall()]  # Column names are in the third position
+    cur.close()
+    return columns
+
+if __name__ == "__main__":
+    try:
+        # Step 1: Read configuration
+        config_file = "config.json"
+        config = read_connection_details(config_file)
+        table_name = config.get("table_name")
+
+        if not table_name:
+            raise ValueError("Table name not specified in the configuration file.")
+
+        # Step 2: Establish Snowflake connection
+        print("Establishing connection to Snowflake...")
+        conn, database_name, schema_name = get_snowflake_connection(config_file)
+        print("Connection established successfully.")
+
+        # Step 3: Get all columns
+        print(f"Fetching column names for table: {table_name}")
+        columns = get_all_columns(conn, database_name, schema_name, table_name)
+        print(f"Columns fetched: {columns}")
+
+        output_file = f"{table_name}_column_analysis.xlsx"
+        with pd.ExcelWriter(output_file, engine="openpyxl") as writer:
+            for column in columns:
+                print(f"Analyzing column: {column}")
+
+                # Step 4: Check column for identical character patterns
+                results = check_column_for_identical_characters(conn, database_name, schema_name, table_name, column)
+                
+                if results:
+                    print(f"Identical character patterns found in column: {column}")
+                    df_results = pd.DataFrame(results, columns=[column])
+                    df_results.to_excel(writer, sheet_name=f"{column}_Results", index=False)
+                else:
+                    print(f"No identical character patterns found in column: {column}")
+                    pd.DataFrame({"Message": [f"No identical character patterns found in column: {column}"]}).to_excel(
+                        writer, sheet_name=f"{column}_NoMatch", index=False
+                    )
+
+        print(f"Results written to: {output_file}")
+
+    except Exception as e:
+        print(f"Error: {e}")
+    finally:
+        print("Closing Snowflake connection.")
+        conn.close()
