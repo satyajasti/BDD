@@ -3,7 +3,7 @@ from snowflake_connectivity import get_snowflake_connection, read_connection_det
 
 def check_column_for_identical_characters(conn, database, schema, table_name, column):
     """
-    Check a single column for identical character patterns.
+    Check a single column for identical character patterns and return the query and results.
     """
     query = f"""
     SELECT {column}
@@ -14,7 +14,7 @@ def check_column_for_identical_characters(conn, database, schema, table_name, co
     cur.execute(query)
     rows = cur.fetchall()
     cur.close()
-    return rows
+    return query, rows
 
 def get_all_columns(conn, database, schema, table_name):
     """
@@ -47,25 +47,27 @@ if __name__ == "__main__":
         columns = get_all_columns(conn, database_name, schema_name, table_name)
         print(f"Columns fetched: {columns}")
 
+        results = []
+        for column in columns:
+            print(f"Analyzing column: {column}")
+
+            # Step 4: Check column for identical character patterns
+            query, matching_rows = check_column_for_identical_characters(conn, database_name, schema_name, table_name, column)
+
+            # Print the query in the console
+            print(f"Executed Query: {query.strip()}")
+
+            if matching_rows:
+                results.append({"Column Name": column, "SQL Query": query.strip(), "Message": "Matches Found"})
+            else:
+                results.append({"Column Name": column, "SQL Query": query.strip(), "Message": "No Matches Found"})
+
+        # Step 5: Write results to Excel
         output_file = f"{table_name}_column_analysis.xlsx"
-        with pd.ExcelWriter(output_file, engine="openpyxl") as writer:
-            for column in columns:
-                print(f"Analyzing column: {column}")
+        df_results = pd.DataFrame(results)
+        df_results.to_excel(output_file, sheet_name="Analysis_Results", index=False)
 
-                # Step 4: Check column for identical character patterns
-                results = check_column_for_identical_characters(conn, database_name, schema_name, table_name, column)
-                
-                if results:
-                    print(f"Identical character patterns found in column: {column}")
-                    df_results = pd.DataFrame(results, columns=[column])
-                    df_results.to_excel(writer, sheet_name=f"{column}_Results", index=False)
-                else:
-                    print(f"No identical character patterns found in column: {column}")
-                    pd.DataFrame({"Message": [f"No identical character patterns found in column: {column}"]}).to_excel(
-                        writer, sheet_name=f"{column}_NoMatch", index=False
-                    )
-
-        print(f"Results written to: {output_file}")
+        print(f"\nResults written to: {output_file}")
 
     except Exception as e:
         print(f"Error: {e}")
