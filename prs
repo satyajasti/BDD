@@ -1,0 +1,40 @@
+import sqlparse
+import os
+from collections import defaultdict
+
+def extract_tables(sql_query):
+    """Extracts table names from SQL query"""
+    parsed = sqlparse.parse(sql_query)
+    tables = set()
+    
+    for stmt in parsed:
+        for token in stmt.tokens:
+            if token.ttype is None and token.get_real_name():
+                tables.add(token.get_real_name())
+    
+    return tables
+
+def process_sql_files(directory):
+    """Processes multiple SQL files and finds relationships"""
+    table_relationships = defaultdict(set)
+
+    for file in os.listdir(directory):
+        if file.endswith(".sql"):
+            with open(os.path.join(directory, file), "r") as f:
+                sql_content = f.read()
+                tables = extract_tables(sql_content)
+                
+                for table in tables:
+                    table_relationships[table].update(tables - {table})
+    
+    return table_relationships
+
+# Directory containing SQL files
+sql_directory = "path_to_sql_files"
+
+# Extract relationships
+relationships = process_sql_files(sql_directory)
+
+# Print relationships
+for table, related_tables in relationships.items():
+    print(f"{table} is related to: {', '.join(related_tables)}")
