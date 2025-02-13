@@ -1,0 +1,55 @@
+import os
+import sqlparse
+from collections import defaultdict
+from graphviz import Digraph
+
+# Directory where SQL files are stored
+SQL_DIR = "path_to_sql_files"
+
+def extract_tables_from_sql(sql):
+    """Extract tables from SQL queries."""
+    parsed = sqlparse.parse(sql)
+    sources, targets = set(), set()
+
+    for stmt in parsed:
+        tokens = stmt.tokens
+        for i, token in enumerate(tokens):
+            if token.value.upper() in ("FROM", "JOIN"):
+                sources.add(tokens[i + 2].get_real_name())  # Extract source table
+            elif token.value.upper() in ("INSERT INTO", "UPDATE", "MERGE INTO", "CREATE TABLE"):
+                targets.add(tokens[i + 2].get_real_name())  # Extract target table
+
+    return sources, targets
+
+def process_sql_files(directory):
+    """Process all SQL files and extract dependencies."""
+    data_flow = defaultdict(set)
+
+    for file in os.listdir(directory):
+        if file.endswith(".sql"):
+            with open(os.path.join(directory, file), "r") as f:
+                sql_content = f.read()
+                sources, targets = extract_tables_from_sql(sql_content)
+
+                for target in targets:
+                    data_flow[target].update(sources)
+
+    return data_flow
+
+# Extract data flow from SQL files
+data_flow_map = process_sql_files(SQL_DIR)
+
+# Create a Graph
+dot = Digraph(comment="SQL Data Flow")
+
+for target, sources in data_flow_map.items():
+    for source in sources:
+        dot.edge(source, target)
+
+# Save Graph as Image
+dot.render("data_flow", format="png", cleanup=True)
+print("Data Flow Graph saved as 'data_flow.png'")
+
+# Print Data Flow Mapping
+for target, sources in data_flow_map.items():
+    print(f"{target} depends on {', '.join(sources)}")
