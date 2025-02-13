@@ -1,0 +1,106 @@
+import os
+import re
+import pandas as pd
+import networkx as nx
+import matplotlib.pyplot as plt
+import sqlglot
+
+# Define the folder containing SQL files
+sql_folder = "sample_sql_files"
+
+# Ensure the output folder exists
+output_folder = "sql_dependencies_output"
+os.makedirs(output_folder, exist_ok=True)
+
+# Function to preprocess SQL (clean escape sequences & resolve placeholders)
+def preprocess_sql(sql_text):
+    # Remove hidden escape sequences
+    sql_text = re.sub(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])', '', sql_text)
+    # Replace placeholder variables ${...} with a default value
+    sql_text = re.sub(r"\$\{.*?\}", "DUMMY_DB", sql_text)
+    return sql_text
+
+# Initialize a directed graph for visualization
+dependency_graph = nx.DiGraph()
+
+# Process each SQL file separately
+for file in os.listdir(sql_folder):
+    if file.endswith(".sql"):
+        file_path = os.path.join(sql_folder, file)
+
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+            raw_sql = f.read()
+            clean_sql = preprocess_sql(raw_sql)  # Preprocess SQL to fix errors
+
+            try:
+                # Parse SQL using SQLGlot
+                parsed = sqlglot.parse_one(clean_sql)
+
+                # Extract Target Tables (from CREATE TABLE, INSERT INTO, or UPDATE)
+                target_tables = [
+                    str(tbl) for tbl in parsed.find_all(sqlglot.expressions.Create) +
+                    parsed.find_all(sqlglot.expressions.Insert) +
+                    parsed.find_all(sqlglot.expressions.Update)
+                ]
+                
+                # Extract Source Tables (only from SELECT, JOIN, FROM)
+                source_tables = [
+                    str(tbl) for tbl in parsed.find_all(sqlglot.expressions.Table)
+                    if str(tbl) not in target_tables  # Exclude created tables
+                ]
+
+                # Extract Column-Level Transformations
+                transformations = []
+                for col in parsed.find_all(sqlglot.expressions.Column):
+                    parent_expr = col.parent  # Get parent transformation
+                    if parent_expr and not isinstance(parent_expr, sqlglot.expressions.Table):
+                        transformations.append({
+                            "Column": str(col),
+                            "Transformation": str(parent_expr)
+                        })
+
+                # Convert transformation details to DataFrame
+                transformation_df = pd.DataFrame(transformations)
+
+                # Store extracted table dependencies in a DataFrame
+                df = pd.DataFrame({
+                    "Source_Tables": [", ".join(source_tables)],
+                    "Target_Tables": [", ".join(target_tables)],
+                    "Column_Transformations": [", ".join(f"{row['Column']} → {row['Transformation']}" for _, row in transformation_df.iterrows())]
+                })
+
+                # Save each file's result to an Excel file with the same name as the SQL file
+                excel_filename = os.path.splitext(file)[0] + ".xlsx"
+                output_file = os.path.join(output_folder, excel_filename)
+
+                try:
+                    with pd.ExcelWriter(output_file, engine="openpyxl") as writer:
+                        df.to_excel(writer, sheet_name="Table Dependencies", index=False)
+                        transformation_df.to_excel(writer, sheet_name="Column Transformations", index=False)
+                    print(f"✅ Extracted dependencies saved in '{output_file}'")
+                except Exception as e:
+                    print(f"❌ Error saving '{output_file}': {e}")
+
+                # Add dependencies to the graph
+                for src in source_tables:
+                    for tgt in target_tables:
+                        dependency_graph.add_edge(str(src), str(tgt), label="Source to Target")
+
+            except Exception as e:
+                print(f"⚠️ Error parsing SQL file '{file}': {e}")
+
+# Visualizing the Dependency Graph
+plt.figure(figsize=(12, 7))
+pos = nx.spring_layout(dependency_graph)  # Positioning nodes
+nx.draw(dependency_graph, pos, with_labels=True, node_color="lightblue", edge_color="gray", node_size=2500, font_size=10, font_weight="bold")
+edge_labels = nx.get_edge_attributes(dependency_graph, 'label')
+nx.draw_networkx_edge_labels(dependency_graph, pos, edge_labels=edge_labels, font_size=8, font_color="red")
+
+# Save and show the graph
+plt.title("Source-Target Table & Column Dependencies")
+graph_output_path = os.path.join(output_folder, "table_dependency_graph.png")
+plt.savefig(graph_output_path)
+plt.show()
+
+print(f"✅ Dependency graph saved at: {graph_output_path}")
+print("✅ Extraction complete! Each SQL file has a corresponding Excel file in the 'sql_dependencies_output' folder.")
