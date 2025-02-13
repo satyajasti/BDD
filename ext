@@ -1,0 +1,46 @@
+import os
+import re
+import pandas as pd
+
+# Folder containing SQL files
+sql_folder = "sample_sql_files"
+output_folder = "sql_dependencies_output"
+os.makedirs(output_folder, exist_ok=True)
+
+# Regex patterns
+target_pattern = re.compile(r"CREATE OR REPLACE TEMPORARY TABLE (\S+) AS", re.IGNORECASE)
+source_pattern = re.compile(r"FROM\s+(\S+)|JOIN\s+(\S+)", re.IGNORECASE)
+
+# Process each SQL file separately
+for file in os.listdir(sql_folder):
+    if file.endswith(".sql"):
+        file_path = os.path.join(sql_folder, file)
+
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+            sql_text = f.read()
+
+            # Extract target tables
+            target_tables = target_pattern.findall(sql_text)
+
+            # Extract source tables
+            source_tables_matches = source_pattern.findall(sql_text)
+            source_tables = set()
+            for match in source_tables_matches:
+                for table in match:
+                    if table:
+                        source_tables.add(table)
+
+            # Store extracted data in a DataFrame
+            df = pd.DataFrame({
+                "Source_Tables": [", ".join(source_tables)],
+                "Target_Tables": [", ".join(target_tables)]
+            })
+
+            # Save each file's result to an Excel file with the same name as the SQL file
+            excel_filename = os.path.splitext(file)[0] + ".xlsx"
+            output_file = os.path.join(output_folder, excel_filename)
+            df.to_excel(output_file, index=False)
+
+            print(f" Extracted dependencies saved in '{output_file}'")
+
+print("Extraction complete! Each SQL file has a corresponding Excel file in the 'sql_dependencies_output' folder.")
