@@ -1,55 +1,82 @@
-import os
-import sqlparse
-from collections import defaultdict
-from graphviz import Digraph
+import snowflake.connector
+import pandas as pd
+import ace_tools as tools
 
-# Directory where SQL files are stored
-SQL_DIR = "path_to_sql_files"
+# Snowflake connection details (Replace with actual credentials)
+conn = snowflake.connector.connect(
+    user='your_user',
+    password='your_password',
+    account='your_account',
+    warehouse='your_warehouse',
+    database='your_database',
+    schema='your_schema'
+)
 
-def extract_tables_from_sql(sql):
-    """Extract tables from SQL queries."""
-    parsed = sqlparse.parse(sql)
-    sources, targets = set(), set()
+# Table to track dependencies
+table_name = "YOUR_TABLE"  # Change this to the table you want to track
 
-    for stmt in parsed:
-        tokens = stmt.tokens
-        for i, token in enumerate(tokens):
-            if token.value.upper() in ("FROM", "JOIN"):
-                sources.add(tokens[i + 2].get_real_name())  # Extract source table
-            elif token.value.upper() in ("INSERT INTO", "UPDATE", "MERGE INTO", "CREATE TABLE"):
-                targets.add(tokens[i + 2].get_real_name())  # Extract target table
+# Optimized Recursive Query for Full Backtracking (Upstream Sources)
+query_full_backtrack = f"""
+WITH RECURSIVE backtrack AS (
+    SELECT DISTINCT 
+        referenced_object_name AS source_table, 
+        referencing_object_name AS target_table,
+        1 AS level
+    FROM snowflake.account_usage.object_dependencies
+    WHERE referencing_object_name = '{table_name}'
 
-    return sources, targets
+    UNION ALL
 
-def process_sql_files(directory):
-    """Process all SQL files and extract dependencies."""
-    data_flow = defaultdict(set)
+    SELECT DISTINCT 
+        d.referenced_object_name, 
+        d.referencing_object_name, 
+        bt.level + 1
+    FROM snowflake.account_usage.object_dependencies d
+    INNER JOIN backtrack bt
+        ON d.referencing_object_name = bt.source_table
+    WHERE bt.level < 5
+)
+SELECT DISTINCT * FROM backtrack
+ORDER BY level;
+"""
 
-    for file in os.listdir(directory):
-        if file.endswith(".sql"):
-            with open(os.path.join(directory, file), "r") as f:
-                sql_content = f.read()
-                sources, targets = extract_tables_from_sql(sql_content)
+# Optimized Recursive Query for Full Forward Tracking (Downstream Targets)
+query_full_forward_track = f"""
+WITH RECURSIVE forward_track AS (
+    SELECT DISTINCT 
+        referencing_object_name AS target_table, 
+        referenced_object_name AS source_table,
+        1 AS level
+    FROM snowflake.account_usage.object_dependencies
+    WHERE referenced_object_name = '{table_name}'
 
-                for target in targets:
-                    data_flow[target].update(sources)
+    UNION ALL
 
-    return data_flow
+    SELECT DISTINCT 
+        d.referencing_object_name, 
+        d.referenced_object_name, 
+        ft.level + 1
+    FROM snowflake.account_usage.object_dependencies d
+    INNER JOIN forward_track ft
+        ON d.referenced_object_name = ft.target_table
+    WHERE ft.level < 5
+)
+SELECT DISTINCT * FROM forward_track
+ORDER BY level;
+"""
 
-# Extract data flow from SQL files
-data_flow_map = process_sql_files(SQL_DIR)
+# Execute queries
+df_backtrack = pd.read_sql(query_full_backtrack, conn)
+df_forward_track = pd.read_sql(query_full_forward_track, conn)
 
-# Create a Graph
-dot = Digraph(comment="SQL Data Flow")
+# Save results to an Excel file
+excel_filename = "snowflake_table_dependency_tracking.xlsx"
+with pd.ExcelWriter(excel_filename, engine="openpyxl") as writer:
+    df_backtrack.to_excel(writer, sheet_name="Backtrack_Dependency", index=False)
+    df_forward_track.to_excel(writer, sheet_name="Forward_Tracking", index=False)
 
-for target, sources in data_flow_map.items():
-    for source in sources:
-        dot.edge(source, target)
+print(f"Dependency tracking report saved as {excel_filename}")
 
-# Save Graph as Image
-dot.render("data_flow", format="png", cleanup=True)
-print("Data Flow Graph saved as 'data_flow.png'")
-
-# Print Data Flow Mapping
-for target, sources in data_flow_map.items():
-    print(f"{target} depends on {', '.join(sources)}")
+# Display the results to the user
+tools.display_dataframe_to_user(name="Snowflake Table Backtracking", dataframe=df_backtrack)
+tools.display_dataframe_to_user(name="Snowflake Table Forward Tracking", dataframe=df_forward_track)
