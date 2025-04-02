@@ -1,0 +1,42 @@
+import pandas as pd
+from snowflake_connection import get_primary_keys_exls
+
+def run_primary_key_validation(conn, database, schema, table_name, schema1=None, table_name1=None):
+    primary_keys = get_primary_keys_exls(conn, database, schema, table_name)
+
+    if not primary_keys:
+        print(f" No primary key defined for table {table_name}")
+        return pd.DataFrame([{
+            "Primary_Key_Columns": "None",
+            "SQL_Query": "N/A",
+            "Result": "No primary key defined for table"
+        }])
+
+    pk_columns = ', '.join([f'"{col}"' for col in primary_keys])
+    query = f"""
+        SELECT {pk_columns}, COUNT(*) AS cnt
+        FROM "{database}"."{schema}"."{table_name}"
+        GROUP BY {pk_columns}
+        HAVING COUNT(*) > 1
+    """
+
+    print(f"\n Executing PK uniqueness check for: {table_name}")
+    print(f"Primary Key Columns: {primary_keys}")
+    print(f"SQL Query:\n{query}")
+
+    cur = conn.cursor()
+    cur.execute(query)
+    duplicates = cur.fetchall()
+    cur.close()
+
+    if duplicates:
+        df_duplicates = pd.DataFrame(duplicates, columns=primary_keys + ['Count'])
+        df_duplicates.insert(0, "Primary_Key_Columns", ', '.join(primary_keys))
+        df_duplicates.insert(1, "SQL_Query", query.strip())
+        return df_duplicates
+    else:
+        return pd.DataFrame([{
+            "Primary_Key_Columns": ', '.join(primary_keys),
+            "SQL_Query": query.strip(),
+            "Result": "No duplicate primary key records found"
+        }])
