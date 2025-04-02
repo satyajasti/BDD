@@ -1,61 +1,56 @@
-import pandas as pd
-
 def run_duplicate_check(conn, database, schema, table_name):
     print(f"\n Running duplicate validation on table: {database}.{schema}.{table_name}")
-    result_rows = []
+    cur = conn.cursor()
 
-    # Summary Query
+    # Get all columns
+    column_query = f"""
+        SELECT COLUMN_NAME
+        FROM {database}.INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = '{schema}'
+        AND TABLE_NAME = '{table_name}'
+        ORDER BY ORDINAL_POSITION
+    """
+    cur.execute(column_query)
+    columns = [row[0] for row in cur.fetchall()]
+    column_list = ', '.join([f'"{col}"' for col in columns])  # double quotes for Snowflake identifiers
+
+    #  Build summary query
     summary_query = f"""
         SELECT COUNT(*) AS total_rows,
-               COUNT(DISTINCT *) AS distinct_rows
+               COUNT(DISTINCT {column_list}) AS distinct_rows
         FROM "{database}"."{schema}"."{table_name}"
     """
-
-    cur = conn.cursor()
     cur.execute(summary_query)
     total_rows, distinct_rows = cur.fetchone()
     duplicate_count = total_rows - distinct_rows
 
-    result_rows.append({
+    # Store summary
+    summary_df = pd.DataFrame([{
         "Table_Name": table_name,
         "Total_Rows": total_rows,
         "Distinct_Rows": distinct_rows,
         "Duplicate_Count": duplicate_count,
         "Has_Duplicates": "Yes" if duplicate_count > 0 else "No",
         "Summary_Query": summary_query.strip()
-    })
+    }])
 
-    # Sample Duplicate Rows Query (only if duplicates exist)
+    # Build detailed query (sample duplicates)
     sample_df = pd.DataFrame()
     if duplicate_count > 0:
         groupby_query = f"""
-            SELECT *, COUNT(*) AS dup_count
+            SELECT {column_list}, COUNT(*) AS dup_count
             FROM "{database}"."{schema}"."{table_name}"
-            GROUP BY ALL
+            GROUP BY {column_list}
             HAVING COUNT(*) > 1
             LIMIT 5
         """
-        print(f" Detailed duplicate query:\n{groupby_query.strip()}")
+        print(f" Executing detailed duplicate check:\n{groupby_query.strip()}")
         cur.execute(groupby_query)
-        columns = [col[0] for col in cur.description]
         rows = cur.fetchall()
-        sample_df = pd.DataFrame(rows, columns=columns)
+        headers = [desc[0] for desc in cur.description]
+        sample_df = pd.DataFrame(rows, columns=headers)
         sample_df.insert(0, "Table_Name", table_name)
         sample_df["Dup_Query"] = groupby_query.strip()
 
     cur.close()
-
-    # Create DataFrames
-    summary_df = pd.DataFrame(result_rows)
-
     return summary_df, sample_df
-
-
-
-duplicate_summary_df, duplicate_sample_df = run_duplicate_check(conn, database, schema, table)
-
-write_df_to_sheet(wb, "duplicate_check_summary", duplicate_summary_df)
-
-if not duplicate_sample_df.empty:
-    write_df_to_sheet(wb, "duplicate_rows_sample", duplicate_sample_df)
-
