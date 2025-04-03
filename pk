@@ -66,3 +66,93 @@ def run_pattern_validation(conn, rule_df, database):
     samples_df = pd.concat(all_invalid_samples, ignore_index=True) if all_invalid_samples else pd.DataFrame()
 
     return summary_df, samples_df
+
+
+
+
+---------------------------------------------------------------
+
+def read_table_info_from_excel(file_path):
+    df = pd.read_excel(file_path)
+    print("\n Loaded table list from Excel:")
+    print(df)
+    return df
+
+def write_df_to_sheet(wb, sheet_name, df):
+    print(f" Writing to sheet: {sheet_name} (Rows: {len(df)})")
+    ws = wb.create_sheet(title=sheet_name)
+    for row in dataframe_to_rows(df, index=False, header=True):
+        if any(row):
+            ws.append(row)
+
+def run_validation(excel_path, config_path):
+    table_info_df = read_table_info_from_excel(excel_path)
+    validation_status = []  # ⬅️ NEW: status tracker
+
+    # Connect to Snowflake
+    conn, database, schema, table_name, schema1, table_name1 = get_snowflake_connection(config_path)
+
+    try:
+        for _, row in table_info_df.iterrows():
+            database = str(row['Database']).strip()
+            schema = str(row['Schema']).strip()
+            table = str(row['Table']).strip()
+
+            print(f"\n Running validations for table: {database}.{schema}.{table}")
+
+            try:
+                # Run validations
+                null_df = run_null_validation(conn, database, schema, table, schema1, table_name1)
+                distinct_df = run_distinct_validation(conn, database, schema, table, schema1, table_name1)
+                dup_summary_df, dup_sample_df = run_duplicate_check(conn, database, schema, table)
+                pk_df = run_primary_key_validation(conn, database, schema, table, schema1, table_name1)
+
+                # Handle workbook
+                output_file = f"{table}.xlsx"
+                if os.path.exists(output_file):
+                    from openpyxl import load_workbook
+                    wb = load_workbook(output_file)
+                    print(f" Updating existing workbook: {output_file}")
+                else:
+                    wb = Workbook()
+                    wb.remove(wb.active)
+                    print(f" Creating new workbook: {output_file}")
+
+                # Write sheets
+                write_df_to_sheet(wb, "null", null_df)
+                write_df_to_sheet(wb, "distinct", distinct_df)
+                write_df_to_sheet(wb, "duplicate_check_summary", dup_summary_df)
+                if not dup_sample_df.empty:
+                    write_df_to_sheet(wb, "duplicate_rows_sample", dup_sample_df)
+                write_df_to_sheet(wb, "pk_check", pk_df)
+
+                wb.save(output_file)
+                print(f" Excel saved: {output_file}")
+
+                # Log success
+                validation_status.append({
+                    "Database": database,
+                    "Schema": schema,
+                    "Table": table,
+                    "Status": "Success",
+                    "Error": ""
+                })
+
+            except Exception as e:
+                print(f" Error while processing {table}: {e}")
+                validation_status.append({
+                    "Database": database,
+                    "Schema": schema,
+                    "Table": table,
+                    "Status": "Failed",
+                    "Error": str(e)
+                })
+
+    finally:
+        conn.close()
+        print(" Snowflake connection closed.")
+
+    #  Save status log
+    status_df = pd.DataFrame(validation_status)
+    status_df.to_excel("validation_status_summary.xlsx", index=False)
+    print("\n Validation status written to 'validation_status_summary.xlsx'")
