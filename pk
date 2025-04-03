@@ -21,51 +21,44 @@ def run_table_comparison(config_file, output_dir="reports/table_comparisons"):
     os.makedirs(output_dir, exist_ok=True)
     config_df = read_comparison_config(config_file)
 
-    # Get Snowflake connection
     conn, _, _, _, _, _ = get_snowflake_connection("config.json")
 
     for _, row in config_df.iterrows():
+        database = row['Database'].strip()
         src_table = row['Source_Table'].strip()
         src_schema = row['Source_Schema'].strip()
         tgt_table = row['Target_Table'].strip()
         tgt_schema = row['Target_Schema'].strip()
         columns = [col.strip() for col in row['Compare_Columns'].split(',')]
-        key_column = row['Key_Column'].strip() if 'Key_Column' in row else columns[0]  # fallback
 
-        print(f"\n Comparing: {src_schema}.{src_table} vs {tgt_schema}.{tgt_table}")
+        print(f"\n Comparing: {database}.{src_schema}.{src_table} vs {database}.{tgt_schema}.{tgt_table}")
 
         try:
+            # Switch database
+            conn.cursor().execute(f"USE DATABASE {database}")
+
             src_query = f"SELECT {', '.join(columns)} FROM {src_schema}.{src_table}"
             tgt_query = f"SELECT {', '.join(columns)} FROM {tgt_schema}.{tgt_table}"
 
             src_df = pd.read_sql(src_query, conn).astype(str)
             tgt_df = pd.read_sql(tgt_query, conn).astype(str)
 
-            src_df.set_index(key_column, inplace=True)
-            tgt_df.set_index(key_column, inplace=True)
+            # Compare rows as sets of tuples
+            src_rows = set([tuple(row) for row in src_df[columns].to_numpy()])
+            tgt_rows = set([tuple(row) for row in tgt_df[columns].to_numpy()])
 
-            # Rows only in source
-            only_in_source = src_df[~src_df.index.isin(tgt_df.index)].head(10).reset_index()
+            only_in_source = pd.DataFrame(list(src_rows - tgt_rows), columns=columns).head(10)
+            only_in_target = pd.DataFrame(list(tgt_rows - src_rows), columns=columns).head(10)
 
-            # Rows only in target
-            only_in_target = tgt_df[~tgt_df.index.isin(src_df.index)].head(10).reset_index()
+            # For mismatches, we do an intersection but not exact match (extra validation layer)
+            mismatched = []
+            for row in src_rows & tgt_rows:
+                src_count = sum((tuple(row) == r for r in src_df.to_numpy().tolist()))
+                tgt_count = sum((tuple(row) == r for r in tgt_df.to_numpy().tolist()))
+                if src_count != tgt_count:
+                    mismatched.append(row)
+            mismatched_df = pd.DataFrame(mismatched, columns=columns).head(10)
 
-            # Matching keys with mismatched values
-            common_keys = src_df.index.intersection(tgt_df.index)
-            mismatches = []
-            for key in common_keys:
-                if not src_df.loc[key].equals(tgt_df.loc[key]):
-                    mismatch_row = {"Key": key}
-                    for col in columns:
-                        src_val = src_df.loc[key][col] if col in src_df.columns else None
-                        tgt_val = tgt_df.loc[key][col] if col in tgt_df.columns else None
-                        if src_val != tgt_val:
-                            mismatch_row[f"{col}_SRC"] = src_val
-                            mismatch_row[f"{col}_TGT"] = tgt_val
-                    mismatches.append(mismatch_row)
-            mismatched_df = pd.DataFrame(mismatches).head(10)
-
-            # Write to Excel
             output_file = os.path.join(output_dir, f"{src_table}_vs_{tgt_table}.xlsx")
             wb = Workbook()
             wb.remove(wb.active)
