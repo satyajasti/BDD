@@ -1,79 +1,92 @@
-def run_validation(excel_path, config_path):
-    # Define output directory
-    output_dir = "reports/validation_outputs"
+import pandas as pd
+import os
+from openpyxl import Workbook, load_workbook
+from openpyxl.utils.dataframe import dataframe_to_rows
+from snowflake_connection import get_snowflake_connection
+from pattern_validation import read_pattern_rules, run_pattern_validation
+
+def write_df_to_sheet(wb, sheet_name, df):
+    print(f" Writing to sheet: {sheet_name} (Rows: {len(df)})")
+    ws = wb.create_sheet(title=sheet_name)
+    for row in dataframe_to_rows(df, index=False, header=True):
+        if any(row):
+            ws.append(row)
+
+def run_pattern_validations(config_path, pattern_excel_path):
+    #  Set a separate output directory for pattern validation results
+    output_dir = "reports/pattern_validation_outputs"
     os.makedirs(output_dir, exist_ok=True)
 
-    table_info_df = read_table_info_from_excel(excel_path)
-    validation_status = []
+    # Load pattern validation rules
+    pattern_rules_df = read_pattern_rules(pattern_excel_path)
+    print("\n Loaded pattern rules:")
+    print(pattern_rules_df)
 
     # Connect to Snowflake
-    conn, database, schema, table_name, schema1, table_name1 = get_snowflake_connection(config_path)
+    conn, database, _, _, _, _ = get_snowflake_connection(config_path)
+
+    # Track status for each rule
+    pattern_status = []
 
     try:
-        for _, row in table_info_df.iterrows():
-            database = str(row['Database']).strip()
-            schema = str(row['Schema']).strip()
-            table = str(row['Table']).strip()
+        # Group by table+schema for efficient processing
+        grouped = pattern_rules_df.groupby(['Table', 'Schema'])
 
-            print(f"\n Running validations for table: {database}.{schema}.{table}")
+        for (table, schema), group_rules in grouped:
+            table = table.strip()
+            schema = schema.strip()
+            print(f"\n Running pattern validations for: {database}.{schema}.{table}")
 
             try:
-                # Run validations
-                null_df = run_null_validation(conn, database, schema, table, schema1, table_name1)
-                distinct_df = run_distinct_validation(conn, database, schema, table, schema1, table_name1)
-                dup_summary_df, dup_sample_df = run_duplicate_check(conn, database, schema, table)
-                pk_df = run_primary_key_validation(conn, database, schema, table, schema1, table_name1)
+                summary_df, invalid_df = run_pattern_validation(conn, group_rules, database)
 
-                # Define full Excel path
+                # Define Excel file path
                 output_file = os.path.join(output_dir, f"{table}.xlsx")
 
-                # Load existing file if it exists
+                # Load or create workbook
                 if os.path.exists(output_file):
                     wb = load_workbook(output_file)
-                    print(f"Updating existing workbook: {output_file}")
+                    print(f" Updating existing workbook: {output_file}")
                 else:
                     wb = Workbook()
                     wb.remove(wb.active)
-                    print(f"Creating new workbook: {output_file}")
+                    print(f" Creating new workbook: {output_file}")
 
-                # Write all validation outputs
-                write_df_to_sheet(wb, "null", null_df)
-                write_df_to_sheet(wb, "distinct", distinct_df)
-                write_df_to_sheet(wb, "duplicate_check_summary", dup_summary_df)
-
-                if not dup_sample_df.empty:
-                    write_df_to_sheet(wb, "duplicate_rows_sample", dup_sample_df)
-
-                write_df_to_sheet(wb, "pk_check", pk_df)
+                # Write sheets
+                write_df_to_sheet(wb, "pattern_summary", summary_df)
+                if not invalid_df.empty:
+                    write_df_to_sheet(wb, "invalid_data_sample", invalid_df)
 
                 wb.save(output_file)
-                print(f"Excel saved: {output_file}")
+                print(f" Pattern results saved: {output_file}")
 
-                # Log success
-                validation_status.append({
-                    "Database": database,
-                    "Schema": schema,
+                pattern_status.append({
                     "Table": table,
+                    "Schema": schema,
                     "Status": "Success",
                     "Error": ""
                 })
 
             except Exception as e:
-                print(f" Error processing table {table}: {e}")
-                validation_status.append({
-                    "Database": database,
-                    "Schema": schema,
+                print(f" Error for table {table}: {e}")
+                pattern_status.append({
                     "Table": table,
+                    "Schema": schema,
                     "Status": "Failed",
                     "Error": str(e)
                 })
 
     finally:
         conn.close()
-        print("Snowflake connection closed.")
+        print(" Snowflake connection closed.")
 
-    # Write validation summary to Excel
-    status_df = pd.DataFrame(validation_status)
-    status_file = os.path.join(output_dir, "validation_status_summary.xlsx")
+    # Write pattern validation status
+    status_df = pd.DataFrame(pattern_status)
+    status_file = os.path.join(output_dir, "pattern_validation_status_summary.xlsx")
     status_df.to_excel(status_file, index=False)
-    print(f"\n Validation status written to: {status_file}")
+    print(f"\n Pattern validation status saved to: {status_file}")
+
+if __name__ == "__main__":
+    config_path = "config.json"
+    pattern_excel_path = "pattern_rules.xlsx"  # Excel containing pattern validation rules
+    run_pattern_validations(config_path, pattern_excel_path)
