@@ -1,9 +1,14 @@
 import pandas as pd
 import os
-from openpyxl import Workbook, load_workbook
+from openpyxl import Workbook
 from openpyxl.utils.dataframe import dataframe_to_rows
 from snowflake_connection import get_snowflake_connection
-from pattern_validation import read_pattern_rules, run_pattern_validation
+
+def read_comparison_config(excel_path):
+    df = pd.read_excel(excel_path)
+    print("\n Loaded comparison config from Excel:")
+    print(df)
+    return df
 
 def write_df_to_sheet(wb, sheet_name, df):
     print(f" Writing to sheet: {sheet_name} (Rows: {len(df)})")
@@ -12,81 +17,71 @@ def write_df_to_sheet(wb, sheet_name, df):
         if any(row):
             ws.append(row)
 
-def run_pattern_validations(config_path, pattern_excel_path):
-    #  Set a separate output directory for pattern validation results
-    output_dir = "reports/pattern_validation_outputs"
+def run_table_comparison(config_file, output_dir="reports/table_comparisons"):
     os.makedirs(output_dir, exist_ok=True)
+    config_df = read_comparison_config(config_file)
 
-    # Load pattern validation rules
-    pattern_rules_df = read_pattern_rules(pattern_excel_path)
-    print("\n Loaded pattern rules:")
-    print(pattern_rules_df)
+    # Get Snowflake connection
+    conn, _, _, _, _, _ = get_snowflake_connection("config.json")
 
-    # Connect to Snowflake
-    conn, database, _, _, _, _ = get_snowflake_connection(config_path)
+    for _, row in config_df.iterrows():
+        src_table = row['Source_Table'].strip()
+        src_schema = row['Source_Schema'].strip()
+        tgt_table = row['Target_Table'].strip()
+        tgt_schema = row['Target_Schema'].strip()
+        columns = [col.strip() for col in row['Compare_Columns'].split(',')]
+        key_column = row['Key_Column'].strip() if 'Key_Column' in row else columns[0]  # fallback
 
-    # Track status for each rule
-    pattern_status = []
+        print(f"\n Comparing: {src_schema}.{src_table} vs {tgt_schema}.{tgt_table}")
 
-    try:
-        # Group by table+schema for efficient processing
-        grouped = pattern_rules_df.groupby(['Table', 'Schema'])
+        try:
+            src_query = f"SELECT {', '.join(columns)} FROM {src_schema}.{src_table}"
+            tgt_query = f"SELECT {', '.join(columns)} FROM {tgt_schema}.{tgt_table}"
 
-        for (table, schema), group_rules in grouped:
-            table = table.strip()
-            schema = schema.strip()
-            print(f"\n Running pattern validations for: {database}.{schema}.{table}")
+            src_df = pd.read_sql(src_query, conn).astype(str)
+            tgt_df = pd.read_sql(tgt_query, conn).astype(str)
 
-            try:
-                summary_df, invalid_df = run_pattern_validation(conn, group_rules, database)
+            src_df.set_index(key_column, inplace=True)
+            tgt_df.set_index(key_column, inplace=True)
 
-                # Define Excel file path
-                output_file = os.path.join(output_dir, f"{table}.xlsx")
+            # Rows only in source
+            only_in_source = src_df[~src_df.index.isin(tgt_df.index)].head(10).reset_index()
 
-                # Load or create workbook
-                if os.path.exists(output_file):
-                    wb = load_workbook(output_file)
-                    print(f" Updating existing workbook: {output_file}")
-                else:
-                    wb = Workbook()
-                    wb.remove(wb.active)
-                    print(f" Creating new workbook: {output_file}")
+            # Rows only in target
+            only_in_target = tgt_df[~tgt_df.index.isin(src_df.index)].head(10).reset_index()
 
-                # Write sheets
-                write_df_to_sheet(wb, "pattern_summary", summary_df)
-                if not invalid_df.empty:
-                    write_df_to_sheet(wb, "invalid_data_sample", invalid_df)
+            # Matching keys with mismatched values
+            common_keys = src_df.index.intersection(tgt_df.index)
+            mismatches = []
+            for key in common_keys:
+                if not src_df.loc[key].equals(tgt_df.loc[key]):
+                    mismatch_row = {"Key": key}
+                    for col in columns:
+                        src_val = src_df.loc[key][col] if col in src_df.columns else None
+                        tgt_val = tgt_df.loc[key][col] if col in tgt_df.columns else None
+                        if src_val != tgt_val:
+                            mismatch_row[f"{col}_SRC"] = src_val
+                            mismatch_row[f"{col}_TGT"] = tgt_val
+                    mismatches.append(mismatch_row)
+            mismatched_df = pd.DataFrame(mismatches).head(10)
 
-                wb.save(output_file)
-                print(f" Pattern results saved: {output_file}")
+            # Write to Excel
+            output_file = os.path.join(output_dir, f"{src_table}_vs_{tgt_table}.xlsx")
+            wb = Workbook()
+            wb.remove(wb.active)
 
-                pattern_status.append({
-                    "Table": table,
-                    "Schema": schema,
-                    "Status": "Success",
-                    "Error": ""
-                })
+            write_df_to_sheet(wb, "only_in_source", only_in_source)
+            write_df_to_sheet(wb, "only_in_target", only_in_target)
+            write_df_to_sheet(wb, "mismatches", mismatched_df)
 
-            except Exception as e:
-                print(f" Error for table {table}: {e}")
-                pattern_status.append({
-                    "Table": table,
-                    "Schema": schema,
-                    "Status": "Failed",
-                    "Error": str(e)
-                })
+            wb.save(output_file)
+            print(f" Comparison Excel saved: {output_file}")
 
-    finally:
-        conn.close()
-        print(" Snowflake connection closed.")
+        except Exception as e:
+            print(f" Error comparing tables {src_table} and {tgt_table}: {e}")
 
-    # Write pattern validation status
-    status_df = pd.DataFrame(pattern_status)
-    status_file = os.path.join(output_dir, "pattern_validation_status_summary.xlsx")
-    status_df.to_excel(status_file, index=False)
-    print(f"\n Pattern validation status saved to: {status_file}")
+    conn.close()
+    print(" Snowflake connection closed.")
 
 if __name__ == "__main__":
-    config_path = "config.json"
-    pattern_excel_path = "pattern_rules.xlsx"  # Excel containing pattern validation rules
-    run_pattern_validations(config_path, pattern_excel_path)
+    run_table_comparison("compare_config.xlsx")
