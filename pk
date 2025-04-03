@@ -26,24 +26,28 @@ def run_table_comparison(config_file, output_dir="reports/table_comparisons"):
     summary_rows = []
 
     for _, row in config_df.iterrows():
-        database = row['Database'].strip()
+        src_db = row['Source_Database'].strip()
         src_table = row['Source_Table'].strip()
         src_schema = row['Source_Schema'].strip()
+        tgt_db = row['Target_Database'].strip()
         tgt_table = row['Target_Table'].strip()
         tgt_schema = row['Target_Schema'].strip()
         columns = [col.strip() for col in row['Compare_Columns'].split(',')]
 
-        print(f"\n Comparing: {database}.{src_schema}.{src_table} vs {database}.{tgt_schema}.{tgt_table}")
+        print(f"\n Comparing: {src_db}.{src_schema}.{src_table} vs {tgt_db}.{tgt_schema}.{tgt_table}")
 
         try:
-            conn.cursor().execute(f"USE DATABASE {database}")
-
+            # Query source table
+            conn.cursor().execute(f"USE DATABASE {src_db}")
             src_query = f"SELECT {', '.join(columns)} FROM {src_schema}.{src_table}"
-            tgt_query = f"SELECT {', '.join(columns)} FROM {tgt_schema}.{tgt_table}"
-
             src_df = pd.read_sql(src_query, conn).astype(str)
+
+            # Query target table
+            conn.cursor().execute(f"USE DATABASE {tgt_db}")
+            tgt_query = f"SELECT {', '.join(columns)} FROM {tgt_schema}.{tgt_table}"
             tgt_df = pd.read_sql(tgt_query, conn).astype(str)
 
+            # Compare as sets
             src_rows = set([tuple(row) for row in src_df[columns].to_numpy()])
             tgt_rows = set([tuple(row) for row in tgt_df[columns].to_numpy()])
 
@@ -70,17 +74,21 @@ def run_table_comparison(config_file, output_dir="reports/table_comparisons"):
             print(f" Comparison Excel saved: {output_file}")
 
             summary_rows.append({
+                "Source_Database": src_db,
+                "Target_Database": tgt_db,
                 "Source_Table": src_table,
                 "Target_Table": tgt_table,
                 "Only_in_Source": len(src_rows - tgt_rows),
                 "Only_in_Target": len(tgt_rows - src_rows),
                 "Mismatches": len(mismatched),
-                "Status": " Match" if len(src_rows - tgt_rows) == 0 and len(tgt_rows - src_rows) == 0 and len(mismatched) == 0 else "Diff"
+                "Status": " Match" if len(src_rows - tgt_rows) == 0 and len(tgt_rows - src_rows) == 0 and len(mismatched) == 0 else " Diff"
             })
 
         except Exception as e:
             print(f" Error comparing tables {src_table} and {tgt_table}: {e}")
             summary_rows.append({
+                "Source_Database": src_db,
+                "Target_Database": tgt_db,
                 "Source_Table": src_table,
                 "Target_Table": tgt_table,
                 "Only_in_Source": "-",
@@ -95,7 +103,7 @@ def run_table_comparison(config_file, output_dir="reports/table_comparisons"):
     summary_df = pd.DataFrame(summary_rows)
     summary_path = os.path.join(output_dir, "comparison_summary.xlsx")
     summary_df.to_excel(summary_path, index=False)
-    print(f"\n Comparison summary written to: {summary_path}")
+    print(f"\n  Comparison summary written to: {summary_path}")
 
 if __name__ == "__main__":
     run_table_comparison("compare_config.xlsx")
