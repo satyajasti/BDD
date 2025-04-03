@@ -23,6 +23,8 @@ def run_table_comparison(config_file, output_dir="reports/table_comparisons"):
 
     conn, _, _, _, _, _ = get_snowflake_connection("config.json")
 
+    summary_rows = []
+
     for _, row in config_df.iterrows():
         database = row['Database'].strip()
         src_table = row['Source_Table'].strip()
@@ -34,7 +36,6 @@ def run_table_comparison(config_file, output_dir="reports/table_comparisons"):
         print(f"\n Comparing: {database}.{src_schema}.{src_table} vs {database}.{tgt_schema}.{tgt_table}")
 
         try:
-            # Switch database
             conn.cursor().execute(f"USE DATABASE {database}")
 
             src_query = f"SELECT {', '.join(columns)} FROM {src_schema}.{src_table}"
@@ -43,14 +44,12 @@ def run_table_comparison(config_file, output_dir="reports/table_comparisons"):
             src_df = pd.read_sql(src_query, conn).astype(str)
             tgt_df = pd.read_sql(tgt_query, conn).astype(str)
 
-            # Compare rows as sets of tuples
             src_rows = set([tuple(row) for row in src_df[columns].to_numpy()])
             tgt_rows = set([tuple(row) for row in tgt_df[columns].to_numpy()])
 
             only_in_source = pd.DataFrame(list(src_rows - tgt_rows), columns=columns).head(10)
             only_in_target = pd.DataFrame(list(tgt_rows - src_rows), columns=columns).head(10)
 
-            # For mismatches, we do an intersection but not exact match (extra validation layer)
             mismatched = []
             for row in src_rows & tgt_rows:
                 src_count = sum((tuple(row) == r for r in src_df.to_numpy().tolist()))
@@ -70,11 +69,33 @@ def run_table_comparison(config_file, output_dir="reports/table_comparisons"):
             wb.save(output_file)
             print(f" Comparison Excel saved: {output_file}")
 
+            summary_rows.append({
+                "Source_Table": src_table,
+                "Target_Table": tgt_table,
+                "Only_in_Source": len(src_rows - tgt_rows),
+                "Only_in_Target": len(tgt_rows - src_rows),
+                "Mismatches": len(mismatched),
+                "Status": " Match" if len(src_rows - tgt_rows) == 0 and len(tgt_rows - src_rows) == 0 and len(mismatched) == 0 else "Diff"
+            })
+
         except Exception as e:
             print(f" Error comparing tables {src_table} and {tgt_table}: {e}")
+            summary_rows.append({
+                "Source_Table": src_table,
+                "Target_Table": tgt_table,
+                "Only_in_Source": "-",
+                "Only_in_Target": "-",
+                "Mismatches": "-",
+                "Status": f"Error: {str(e)}"
+            })
 
     conn.close()
     print(" Snowflake connection closed.")
+
+    summary_df = pd.DataFrame(summary_rows)
+    summary_path = os.path.join(output_dir, "comparison_summary.xlsx")
+    summary_df.to_excel(summary_path, index=False)
+    print(f"\n Comparison summary written to: {summary_path}")
 
 if __name__ == "__main__":
     run_table_comparison("compare_config.xlsx")
