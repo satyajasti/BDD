@@ -1,0 +1,124 @@
+import pandas as pd
+import os
+import time
+from openpyxl import Workbook
+from openpyxl.utils.dataframe import dataframe_to_rows
+from snowflake_connection import get_snowflake_connection
+
+def read_comparison_config(excel_path):
+    df = pd.read_excel(excel_path)
+    print("\n Loaded comparison config from Excel:")
+    print(df)
+    return df
+
+def write_df_to_sheet(wb, sheet_name, df):
+    print(f" Writing to sheet: {sheet_name} (Rows: {len(df)})")
+    ws = wb.create_sheet(title=sheet_name)
+    for row in dataframe_to_rows(df, index=False, header=True):
+        if any(row):
+            ws.append(row)
+
+def fetch_query_result(query, conn):
+    cursor = conn.cursor()
+    try:
+        cursor.execute(query)
+        columns = [col[0] for col in cursor.description]
+        rows = cursor.fetchall()
+        return pd.DataFrame(rows, columns=columns).astype(str)
+    finally:
+        cursor.close()
+
+def run_table_comparison(config_file, output_dir="reports/table_comparisons"):
+    os.makedirs(output_dir, exist_ok=True)
+    config_df = read_comparison_config(config_file)
+
+    conn, _, _, _, _, _ = get_snowflake_connection("config.json")
+
+    summary_rows = []
+
+    for index, row in config_df.iterrows():
+        src_db = row['Source_Database'].strip()
+        src_table = row['Source_Table'].strip()
+        src_schema = row['Source_Schema'].strip()
+        tgt_db = row['Target_Database'].strip()
+        tgt_table = row['Target_Table'].strip()
+        tgt_schema = row['Target_Schema'].strip()
+        columns = [col.strip() for col in row['Compare_Columns'].split(',')]
+
+        print(f"\n Comparing [{index+1}/{len(config_df)}]: {src_db}.{src_schema}.{src_table} vs {tgt_db}.{tgt_schema}.{tgt_table}")
+
+        try:
+            conn.cursor().execute(f"USE DATABASE {src_db}")
+            src_query = f"SELECT {', '.join(columns)} FROM {src_schema}.{src_table}"
+            print(f" Source Query: {src_query}")
+            start = time.time()
+            src_df = fetch_query_result(src_query, conn)
+            print(f" Source rows fetched: {len(src_df)} in {time.time() - start:.2f} sec")
+
+            conn.cursor().execute(f"USE DATABASE {tgt_db}")
+            tgt_query = f"SELECT {', '.join(columns)} FROM {tgt_schema}.{tgt_table}"
+            print(f" Target Query: {tgt_query}")
+            start = time.time()
+            tgt_df = fetch_query_result(tgt_query, conn)
+            print(f" Target rows fetched: {len(tgt_df)} in {time.time() - start:.2f} sec")
+
+            # Compare as sets
+            src_rows = set([tuple(row) for row in src_df[columns].to_numpy()])
+            tgt_rows = set([tuple(row) for row in tgt_df[columns].to_numpy()])
+
+            only_in_source = pd.DataFrame(list(src_rows - tgt_rows), columns=columns).head(10)
+            only_in_target = pd.DataFrame(list(tgt_rows - src_rows), columns=columns).head(10)
+
+            mismatched = []
+            for row in src_rows & tgt_rows:
+                src_count = sum((tuple(row) == r for r in src_df.to_numpy().tolist()))
+                tgt_count = sum((tuple(row) == r for r in tgt_df.to_numpy().tolist()))
+                if src_count != tgt_count:
+                    mismatched.append(row)
+            mismatched_df = pd.DataFrame(mismatched, columns=columns).head(10)
+
+            output_file = os.path.join(output_dir, f"{src_table}_vs_{tgt_table}.xlsx")
+            wb = Workbook()
+            wb.remove(wb.active)
+
+            write_df_to_sheet(wb, "only_in_source", only_in_source)
+            write_df_to_sheet(wb, "only_in_target", only_in_target)
+            write_df_to_sheet(wb, "mismatches", mismatched_df)
+
+            wb.save(output_file)
+            print(f" Comparison Excel saved: {output_file}")
+
+            summary_rows.append({
+                "Source_Database": src_db,
+                "Target_Database": tgt_db,
+                "Source_Table": src_table,
+                "Target_Table": tgt_table,
+                "Only_in_Source": len(src_rows - tgt_rows),
+                "Only_in_Target": len(tgt_rows - src_rows),
+                "Mismatches": len(mismatched),
+                "Status": " Match" if len(src_rows - tgt_rows) == 0 and len(tgt_rows - src_rows) == 0 and len(mismatched) == 0 else " Diff"
+            })
+
+        except Exception as e:
+            print(f" Error comparing tables {src_table} and {tgt_table}: {e}")
+            summary_rows.append({
+                "Source_Database": src_db,
+                "Target_Database": tgt_db,
+                "Source_Table": src_table,
+                "Target_Table": tgt_table,
+                "Only_in_Source": "-",
+                "Only_in_Target": "-",
+                "Mismatches": "-",
+                "Status": f"Error: {str(e)}"
+            })
+
+    conn.close()
+    print(" Snowflake connection closed.")
+
+    summary_df = pd.DataFrame(summary_rows)
+    summary_path = os.path.join(output_dir, "comparison_summary.xlsx")
+    summary_df.to_excel(summary_path, index=False)
+    print(f"\n Comparison summary written to: {summary_path}")
+
+if __name__ == "__main__":
+    run_table_comparison("compare_config.xlsx")
