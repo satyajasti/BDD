@@ -11,8 +11,11 @@ def replace_query_parameters(query_text, parameters, env="dev"):
     placeholders = re.findall(r"\$\{([^}]+)\}", query_text)
     for key in set(placeholders):
         if key in parameters:
-            parameters[key] = parameters[key].replace("${env}", env)
-            query_text = query_text.replace(f"${{{key}}}", parameters[key])
+            resolved = parameters[key].replace("${env}", env)
+        else:
+            # If not found in JSON, use TO_BE_RESOLVED as schema
+            resolved = "TO_BE_RESOLVED"
+        query_text = query_text.replace(f"${{{key}}}", resolved)
     return query_text
 
 def extract_schema_table(sql_text):
@@ -37,11 +40,11 @@ def main():
     print(" Loading parameters...")
     parameters = load_parameters(json_path)
 
-    print("📄 Reading query.sql...")
+    print(" Reading query.sql...")
     with open(sql_path, "r") as f:
         raw_sql = f.read()
 
-    print(" Replacing placeholders...")
+    print(" Replacing placeholders (fallback to TO_BE_RESOLVED)...")
     resolved_sql = replace_query_parameters(raw_sql, parameters, env)
 
     print(" Parsing query with sqlglot...")
