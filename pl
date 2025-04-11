@@ -7,8 +7,8 @@ def extract_schema_table(sql_text):
     rows = []
 
     for t in tables:
-        schema = t.args.get("db") or "Unknown"
-        table = t.name
+        schema = t.args.get("db") or "TO_BE_RESOLVED"
+        table = t.name or "UNKNOWN"
         rows.append({"tbl_schema": schema, "Table": table})
 
     df = pd.DataFrame(rows)
