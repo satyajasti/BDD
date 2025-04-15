@@ -1,0 +1,71 @@
+import os
+import re
+import json
+import pandas as pd
+
+CONFIG_FILE = "config.json"
+PHASE1_OUTPUT = "backtrack_extracted.xlsx"
+MAX_SHEET_NAME_LEN = 31
+
+def get_config():
+    with open(CONFIG_FILE, "r") as f:
+        config = json.load(f)
+    excel_path = config["active_excel"]
+    repo_path = config["sql_repo_path"]
+    return os.path.abspath(excel_path), os.path.abspath(repo_path)
+
+def sanitize_sheet_name(name):
+    clean = re.sub(r'[\/*?:\[\]]+', "_", name)
+    return clean[:MAX_SHEET_NAME_LEN]
+
+def extract_tables_from_sql(sql_text):
+    pattern = re.compile(r'\${(\w+)}\.(\w+)')
+    return pattern.findall(sql_text)
+
+def main():
+    excel_path, repo_path = get_config()
+    edl_df = pd.read_excel(excel_path, sheet_name="edl")
+    not_found_df = edl_df[edl_df["Status"] == " NOT FOUND"]
+    unique_missing_tables = not_found_df["Table"].drop_duplicates().tolist()
+
+    backtrack_summary = []
+    all_extracted_by_table = {}
+
+    for table in unique_missing_tables:
+        expected_file = f"{table.lower()}.sql"
+        match_path = None
+        matches = []
+        for root, _, files in os.walk(repo_path):
+            if expected_file in [f.lower() for f in files]:
+                match_path = os.path.join(root, expected_file)
+                break
+
+        if match_path:
+            with open(match_path, "r", encoding="utf-8", errors="ignore") as f:
+                sql = f.read()
+                matches = extract_tables_from_sql(sql)
+                all_extracted_by_table[table] = matches
+        else:
+            all_extracted_by_table[table] = []
+
+        backtrack_summary.append({
+            "Missing Table": table,
+            "Matched File": match_path if match_path else " Not found",
+            "Extracted Tables Count": len(matches),
+            "Sheet Name": sanitize_sheet_name(table)
+        })
+
+    # Write Excel workbook
+    with pd.ExcelWriter(PHASE1_OUTPUT, engine="openpyxl", mode="w") as writer:
+        pd.DataFrame(backtrack_summary).to_excel(writer, sheet_name="backtrack_analysis", index=False)
+
+        for table, extracted in all_extracted_by_table.items():
+            if not extracted:
+                continue
+            rows = [{"Parameter": param, "Table": tbl} for param, tbl in extracted]
+            pd.DataFrame(rows).to_excel(writer, sheet_name=sanitize_sheet_name(table), index=False)
+
+    print(f" Enhanced backtrack completed and written to: {PHASE1_OUTPUT}")
+
+if __name__ == "__main__":
+    main()
