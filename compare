@@ -7,7 +7,7 @@ from moz_sql_parser import parse as moz_parse
 from datetime import datetime
 
 def sanitize_sql_for_moz(sql):
-    return sql.strip().strip(';').replace('\n', ' ')
+    return sql.strip().strip(';').replace('\\n', ' ')
 
 def extract_select_from_insert(sql_text):
     try:
@@ -16,7 +16,7 @@ def extract_select_from_insert(sql_text):
             select_part = parsed.args.get("expression")
             return select_part.to_sql()
     except Exception as e:
-        print(f"⚠️ Could not extract SELECT from INSERT: {e}")
+        print(f"⚠ Could not extract SELECT from INSERT: {e}")
     return sql_text
 
 def parse_with_sqlglot(sql_text):
@@ -26,14 +26,14 @@ def parse_with_sqlglot(sql_text):
             parsed = parsed.args.get("expression")
         return parsed, "sqlglot"
     except Exception as e:
-        print(f"⚠️ sqlglot failed: {e}")
+        print(f" sqlglot failed: {e}")
         return None, None
 
 def parse_with_moz(sql_text):
     try:
         return moz_parse(sanitize_sql_for_moz(sql_text)), "moz_sql_parser"
     except Exception as e:
-        print(f"❌ moz_sql_parser also failed: {e}")
+        print(f" moz_sql_parser also failed: {e}")
         return None, None
 
 def extract_select_columns(parsed_tree, parser_type):
@@ -96,16 +96,41 @@ def extract_where(parsed_tree, parser_type):
         print(f"Error extracting WHERE: {e}")
     return ""
 
+def extract_groupby(parsed_tree, parser_type):
+    try:
+        if parser_type == "sqlglot":
+            group_expr = parsed_tree.args.get("group")
+            return [str(e).lower() for e in group_expr] if group_expr else []
+        elif parser_type == "moz_sql_parser":
+            group = parsed_tree.get("groupby", [])
+            return [str(e).lower() for e in group] if isinstance(group, list) else [str(group).lower()]
+    except Exception as e:
+        print(f"Error extracting GROUP BY: {e}")
+    return []
+
+def extract_having(parsed_tree, parser_type):
+    try:
+        if parser_type == "sqlglot":
+            having_expr = parsed_tree.args.get("having")
+            return str(having_expr).lower() if having_expr else ""
+        elif parser_type == "moz_sql_parser":
+            return str(parsed_tree.get("having", "")).lower()
+    except Exception as e:
+        print(f"Error extracting HAVING: {e}")
+    return ""
+
 def compare_lists(list1, list2):
     set1, set2 = set(list1), set(list2)
     return list(set1 - set2), list(set2 - set1)
 
-def generate_excel_report(table_diffs, column_diffs, join_diffs, where_diffs, summary, output_path="sql_diff_report.xlsx"):
+def generate_excel_report(table_diffs, column_diffs, join_diffs, where_diffs, groupby_diffs, having_diffs, summary, output_path="sql_diff_report.xlsx"):
     with pd.ExcelWriter(output_path, engine="openpyxl", mode="w") as writer:
         pd.DataFrame(table_diffs, columns=["Only in Query 1", "Only in Query 2"]).to_excel(writer, index=False, sheet_name="Table_Diff")
         pd.DataFrame(column_diffs, columns=["Only in Query 1", "Only in Query 2"]).to_excel(writer, index=False, sheet_name="Column_Diff")
         pd.DataFrame(join_diffs, columns=["Only in Query 1", "Only in Query 2"]).to_excel(writer, index=False, sheet_name="Join_Diff")
         pd.DataFrame(where_diffs, columns=["Query 1", "Query 2"]).to_excel(writer, index=False, sheet_name="Where_Diff")
+        pd.DataFrame(groupby_diffs, columns=["Only in Query 1", "Only in Query 2"]).to_excel(writer, index=False, sheet_name="GroupBy_Diff")
+        pd.DataFrame(having_diffs, columns=["Query 1", "Query 2"]).to_excel(writer, index=False, sheet_name="Having_Diff")
         pd.DataFrame([summary]).to_excel(writer, index=False, sheet_name="Summary")
     print(f"📄 Excel report saved to: {output_path}")
 
@@ -127,11 +152,11 @@ def compare_sql_files(file1, file2):
         parsed2, parser2 = parse_with_moz(sql2_clean)
 
     if not parsed1 or not parsed2:
-        print("❌ Failed to parse both queries.")
+        print(" Failed to parse both queries.")
         return
 
-    print(f"✅ Parsed Query 1 using: {parser1}")
-    print(f"✅ Parsed Query 2 using: {parser2}")
+    print(f" Parsed Query 1 using: {parser1}")
+    print(f" Parsed Query 2 using: {parser2}")
 
     cols1 = extract_select_columns(parsed1, parser1)
     cols2 = extract_select_columns(parsed2, parser2)
@@ -145,28 +170,29 @@ def compare_sql_files(file1, file2):
     where1 = extract_where(parsed1, parser1)
     where2 = extract_where(parsed2, parser2)
 
+    group1 = extract_groupby(parsed1, parser1)
+    group2 = extract_groupby(parsed2, parser2)
+
+    having1 = extract_having(parsed1, parser1)
+    having2 = extract_having(parsed2, parser2)
+
     missing_cols1, missing_cols2 = compare_lists(cols1, cols2)
     missing_tbls1, missing_tbls2 = compare_lists(tbls1, tbls2)
     missing_joins1, missing_joins2 = compare_lists(joins1, joins2)
+    missing_group1, missing_group2 = compare_lists(group1, group2)
+
     where_diffs = [(where1, where2)] if where1 != where2 else []
+    having_diffs = [(having1, having2)] if having1 != having2 else []
 
-    print("\n=== COLUMN COMPARISON ===")
-    print("Only in Query 1:", missing_cols1)
-    print("Only in Query 2:", missing_cols2)
+    print("\\n=== GROUP BY COMPARISON ===")
+    print("Only in Query 1:", missing_group1)
+    print("Only in Query 2:", missing_group2)
 
-    print("\n=== TABLE COMPARISON ===")
-    print("Only in Query 1:", missing_tbls1)
-    print("Only in Query 2:", missing_tbls2)
+    print("\\n=== HAVING COMPARISON ===")
+    print("Query 1:", having1)
+    print("Query 2:", having2)
 
-    print("\n=== JOIN COMPARISON ===")
-    print("Only in Query 1:", missing_joins1)
-    print("Only in Query 2:", missing_joins2)
-
-    print("\n=== WHERE COMPARISON ===")
-    print("Query 1:", where1)
-    print("Query 2:", where2)
-
-    verdict = "PASS" if not (missing_cols1 or missing_cols2 or missing_tbls1 or missing_tbls2 or missing_joins1 or missing_joins2 or where_diffs) else "REVIEW"
+    verdict = "PASS" if not (missing_cols1 or missing_cols2 or missing_tbls1 or missing_tbls2 or missing_joins1 or missing_joins2 or where_diffs or missing_group1 or missing_group2 or having_diffs) else "REVIEW"
     summary = {
         "Query 1": os.path.basename(file1),
         "Query 2": os.path.basename(file2),
@@ -179,8 +205,11 @@ def compare_sql_files(file1, file2):
         column_diffs=[(missing_cols1[i] if i < len(missing_cols1) else "", missing_cols2[i] if i < len(missing_cols2) else "") for i in range(max(len(missing_cols1), len(missing_cols2)))],
         join_diffs=[(missing_joins1[i] if i < len(missing_joins1) else "", missing_joins2[i] if i < len(missing_joins2) else "") for i in range(max(len(missing_joins1), len(missing_joins2)))],
         where_diffs=where_diffs,
+        groupby_diffs=[(missing_group1[i] if i < len(missing_group1) else "", missing_group2[i] if i < len(missing_group2) else "") for i in range(max(len(missing_group1), len(missing_group2)))],
+        having_diffs=having_diffs,
         summary=summary
     )
 
 if __name__ == "__main__":
     compare_sql_files("abc_query.sql", "obc_query.sql")
+
