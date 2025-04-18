@@ -2,34 +2,36 @@ import os
 import sys
 import sqlglot
 import pandas as pd
-from sqlglot import parse_one
-from sqlglot.expressions import Select, Insert
+from sqlglot import parse_one, expressions as exp
 from moz_sql_parser import parse as moz_parse
 from datetime import datetime
+
+def sanitize_sql_for_moz(sql):
+    return sql.strip().strip(';').replace('\n', ' ')
 
 def extract_select_from_insert(sql_text):
     try:
         parsed = parse_one(sql_text, read="snowflake")
-        if isinstance(parsed, Insert):
+        if isinstance(parsed, exp.Insert):
             select_part = parsed.args.get("expression")
             return select_part.to_sql()
     except Exception as e:
         print(f"⚠️ Could not extract SELECT from INSERT: {e}")
-    return sql_text  # fallback
+    return sql_text
 
 def parse_with_sqlglot(sql_text):
     try:
         parsed = parse_one(sql_text, read="snowflake")
-        if isinstance(parsed, Insert):
+        if isinstance(parsed, exp.Insert):
             parsed = parsed.args.get("expression")
-        return parsed.to_dict(), "sqlglot"
+        return parsed, "sqlglot"
     except Exception as e:
         print(f"⚠️ sqlglot failed: {e}")
         return None, None
 
 def parse_with_moz(sql_text):
     try:
-        return moz_parse(sql_text), "moz_sql_parser"
+        return moz_parse(sanitize_sql_for_moz(sql_text)), "moz_sql_parser"
     except Exception as e:
         print(f"❌ moz_sql_parser also failed: {e}")
         return None, None
@@ -39,7 +41,7 @@ def extract_select_columns(parsed_tree, parser_type):
         return []
     try:
         if parser_type == "sqlglot":
-            return [col.get("name") or col.get("alias") for col in parsed_tree.get("select", []) if isinstance(col, dict)]
+            return [str(col).lower() for col in parsed_tree.expressions]
         elif parser_type == "moz_sql_parser":
             return list(parsed_tree.get("select", {}).keys())
     except Exception as e:
@@ -51,8 +53,10 @@ def extract_tables(parsed_tree, parser_type):
         return []
     try:
         if parser_type == "sqlglot":
-            froms = parsed_tree.get("from", [])
-            return [tbl.get("this") for tbl in froms if isinstance(tbl, dict) and "this" in tbl]
+            from_ = parsed_tree.args.get("from")
+            if not from_:
+                return []
+            return [str(f).lower() for f in from_ if isinstance(f, exp.Table)]
         elif parser_type == "moz_sql_parser":
             frm = parsed_tree.get("from", {})
             if isinstance(frm, dict):
@@ -65,14 +69,43 @@ def extract_tables(parsed_tree, parser_type):
         print(f"Error extracting tables: {e}")
     return []
 
+def extract_joins(parsed_tree, parser_type):
+    joins = []
+    try:
+        if parser_type == "sqlglot":
+            for join in parsed_tree.find_all(exp.Join):
+                joins.append(str(join).lower())
+        elif parser_type == "moz_sql_parser":
+            join_clause = parsed_tree.get("from", {})
+            if isinstance(join_clause, list):
+                for item in join_clause:
+                    if isinstance(item, dict) and "join" in item:
+                        joins.append(str(item))
+    except Exception as e:
+        print(f"Error extracting joins: {e}")
+    return joins
+
+def extract_where(parsed_tree, parser_type):
+    try:
+        if parser_type == "sqlglot":
+            where_expr = parsed_tree.args.get("where")
+            return str(where_expr).lower() if where_expr else ""
+        elif parser_type == "moz_sql_parser":
+            return str(parsed_tree.get("where", "")).lower()
+    except Exception as e:
+        print(f"Error extracting WHERE: {e}")
+    return ""
+
 def compare_lists(list1, list2):
     set1, set2 = set(list1), set(list2)
     return list(set1 - set2), list(set2 - set1)
 
-def generate_excel_report(table_diffs, column_diffs, summary, output_path="sql_diff_report.xlsx"):
+def generate_excel_report(table_diffs, column_diffs, join_diffs, where_diffs, summary, output_path="sql_diff_report.xlsx"):
     with pd.ExcelWriter(output_path, engine="openpyxl", mode="w") as writer:
         pd.DataFrame(table_diffs, columns=["Only in Query 1", "Only in Query 2"]).to_excel(writer, index=False, sheet_name="Table_Diff")
         pd.DataFrame(column_diffs, columns=["Only in Query 1", "Only in Query 2"]).to_excel(writer, index=False, sheet_name="Column_Diff")
+        pd.DataFrame(join_diffs, columns=["Only in Query 1", "Only in Query 2"]).to_excel(writer, index=False, sheet_name="Join_Diff")
+        pd.DataFrame(where_diffs, columns=["Query 1", "Query 2"]).to_excel(writer, index=False, sheet_name="Where_Diff")
         pd.DataFrame([summary]).to_excel(writer, index=False, sheet_name="Summary")
     print(f"📄 Excel report saved to: {output_path}")
 
@@ -106,8 +139,16 @@ def compare_sql_files(file1, file2):
     tbls1 = extract_tables(parsed1, parser1)
     tbls2 = extract_tables(parsed2, parser2)
 
+    joins1 = extract_joins(parsed1, parser1)
+    joins2 = extract_joins(parsed2, parser2)
+
+    where1 = extract_where(parsed1, parser1)
+    where2 = extract_where(parsed2, parser2)
+
     missing_cols1, missing_cols2 = compare_lists(cols1, cols2)
     missing_tbls1, missing_tbls2 = compare_lists(tbls1, tbls2)
+    missing_joins1, missing_joins2 = compare_lists(joins1, joins2)
+    where_diffs = [(where1, where2)] if where1 != where2 else []
 
     print("\n=== COLUMN COMPARISON ===")
     print("Only in Query 1:", missing_cols1)
@@ -117,7 +158,15 @@ def compare_sql_files(file1, file2):
     print("Only in Query 1:", missing_tbls1)
     print("Only in Query 2:", missing_tbls2)
 
-    verdict = "PASS" if not (missing_cols1 or missing_cols2 or missing_tbls1 or missing_tbls2) else "REVIEW"
+    print("\n=== JOIN COMPARISON ===")
+    print("Only in Query 1:", missing_joins1)
+    print("Only in Query 2:", missing_joins2)
+
+    print("\n=== WHERE COMPARISON ===")
+    print("Query 1:", where1)
+    print("Query 2:", where2)
+
+    verdict = "PASS" if not (missing_cols1 or missing_cols2 or missing_tbls1 or missing_tbls2 or missing_joins1 or missing_joins2 or where_diffs) else "REVIEW"
     summary = {
         "Query 1": os.path.basename(file1),
         "Query 2": os.path.basename(file2),
@@ -128,6 +177,8 @@ def compare_sql_files(file1, file2):
     generate_excel_report(
         table_diffs=[(missing_tbls1[i] if i < len(missing_tbls1) else "", missing_tbls2[i] if i < len(missing_tbls2) else "") for i in range(max(len(missing_tbls1), len(missing_tbls2)))],
         column_diffs=[(missing_cols1[i] if i < len(missing_cols1) else "", missing_cols2[i] if i < len(missing_cols2) else "") for i in range(max(len(missing_cols1), len(missing_cols2)))],
+        join_diffs=[(missing_joins1[i] if i < len(missing_joins1) else "", missing_joins2[i] if i < len(missing_joins2) else "") for i in range(max(len(missing_joins1), len(missing_joins2)))],
+        where_diffs=where_diffs,
         summary=summary
     )
 
