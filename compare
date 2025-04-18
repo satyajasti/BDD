@@ -7,7 +7,7 @@ from moz_sql_parser import parse as moz_parse
 from datetime import datetime
 
 def sanitize_sql_for_moz(sql):
-    return sql.strip().strip(';').replace('\\n', ' ')
+    return sql.strip().strip(';').replace('\n', ' ')
 
 def extract_select_from_insert(sql_text):
     try:
@@ -16,105 +16,75 @@ def extract_select_from_insert(sql_text):
             select_part = parsed.args.get("expression")
             return select_part.to_sql()
     except Exception as e:
-        print(f"⚠ Could not extract SELECT from INSERT: {e}")
+        print(f"⚠️ Could not extract SELECT from INSERT: {e}")
     return sql_text
+
+def unwrap_subquery(expr):
+    if isinstance(expr, exp.Select):
+        return expr
+    elif isinstance(expr, exp.Subquery):
+        sub = expr.args.get("this")
+        if isinstance(sub, exp.Select):
+            return sub
+    elif isinstance(expr, exp.Alias) and isinstance(expr.args.get("this"), exp.Subquery):
+        sub = expr.args.get("this").args.get("this")
+        if isinstance(sub, exp.Select):
+            return sub
+    return expr
 
 def parse_with_sqlglot(sql_text):
     try:
         parsed = parse_one(sql_text, read="snowflake")
-        if isinstance(parsed, exp.Insert):
-            parsed = parsed.args.get("expression")
+        parsed = unwrap_subquery(parsed)
         return parsed, "sqlglot"
     except Exception as e:
-        print(f" sqlglot failed: {e}")
+        print(f"⚠️ sqlglot failed: {e}")
         return None, None
 
 def parse_with_moz(sql_text):
     try:
         return moz_parse(sanitize_sql_for_moz(sql_text)), "moz_sql_parser"
     except Exception as e:
-        print(f" moz_sql_parser also failed: {e}")
+        print(f"❌ moz_sql_parser also failed: {e}")
         return None, None
 
-def extract_select_columns(parsed_tree, parser_type):
-    if not parsed_tree:
-        return []
+def extract_all_where(parsed):
+    return [str(where).lower() for where in parsed.find_all(exp.Where)]
+
+def extract_all_joins(parsed):
+    return [str(join).lower() for join in parsed.find_all(exp.Join)]
+
+def extract_select_columns(parsed, parser_type):
     try:
         if parser_type == "sqlglot":
-            return [str(col).lower() for col in parsed_tree.expressions]
-        elif parser_type == "moz_sql_parser":
-            return list(parsed_tree.get("select", {}).keys())
+            return [str(col).lower() for col in parsed.expressions]
     except Exception as e:
         print(f"Error extracting columns: {e}")
     return []
 
-def extract_tables(parsed_tree, parser_type):
-    if not parsed_tree:
-        return []
+def extract_tables(parsed, parser_type):
     try:
         if parser_type == "sqlglot":
-            from_ = parsed_tree.args.get("from")
-            if not from_:
-                return []
-            return [str(f).lower() for f in from_ if isinstance(f, exp.Table)]
-        elif parser_type == "moz_sql_parser":
-            frm = parsed_tree.get("from", {})
-            if isinstance(frm, dict):
-                return [frm.get("value")]
-            elif isinstance(frm, list):
-                return [item.get("value") if isinstance(item, dict) else item for item in frm]
-            else:
-                return [frm]
+            from_ = parsed.args.get("from")
+            return [str(tbl).lower() for tbl in from_] if from_ else []
     except Exception as e:
         print(f"Error extracting tables: {e}")
     return []
 
-def extract_joins(parsed_tree, parser_type):
-    joins = []
+def extract_groupby(parsed, parser_type):
     try:
         if parser_type == "sqlglot":
-            for join in parsed_tree.find_all(exp.Join):
-                joins.append(str(join).lower())
-        elif parser_type == "moz_sql_parser":
-            join_clause = parsed_tree.get("from", {})
-            if isinstance(join_clause, list):
-                for item in join_clause:
-                    if isinstance(item, dict) and "join" in item:
-                        joins.append(str(item))
-    except Exception as e:
-        print(f"Error extracting joins: {e}")
-    return joins
-
-def extract_where(parsed_tree, parser_type):
-    try:
-        if parser_type == "sqlglot":
-            where_expr = parsed_tree.args.get("where")
-            return str(where_expr).lower() if where_expr else ""
-        elif parser_type == "moz_sql_parser":
-            return str(parsed_tree.get("where", "")).lower()
-    except Exception as e:
-        print(f"Error extracting WHERE: {e}")
-    return ""
-
-def extract_groupby(parsed_tree, parser_type):
-    try:
-        if parser_type == "sqlglot":
-            group_expr = parsed_tree.args.get("group")
+            group_expr = parsed.args.get("group")
             return [str(e).lower() for e in group_expr] if group_expr else []
-        elif parser_type == "moz_sql_parser":
-            group = parsed_tree.get("groupby", [])
-            return [str(e).lower() for e in group] if isinstance(group, list) else [str(group).lower()]
     except Exception as e:
         print(f"Error extracting GROUP BY: {e}")
     return []
 
-def extract_having(parsed_tree, parser_type):
+def extract_having(parsed, parser_type):
     try:
         if parser_type == "sqlglot":
-            having_expr = parsed_tree.args.get("having")
+            having_expr = parsed.args.get("having")
             return str(having_expr).lower() if having_expr else ""
-        elif parser_type == "moz_sql_parser":
-            return str(parsed_tree.get("having", "")).lower()
     except Exception as e:
         print(f"Error extracting HAVING: {e}")
     return ""
@@ -146,17 +116,12 @@ def compare_sql_files(file1, file2):
     parsed1, parser1 = parse_with_sqlglot(sql1_clean)
     parsed2, parser2 = parse_with_sqlglot(sql2_clean)
 
-    if not parsed1:
-        parsed1, parser1 = parse_with_moz(sql1_clean)
-    if not parsed2:
-        parsed2, parser2 = parse_with_moz(sql2_clean)
-
     if not parsed1 or not parsed2:
-        print(" Failed to parse both queries.")
+        print("❌ Failed to parse both queries.")
         return
 
-    print(f" Parsed Query 1 using: {parser1}")
-    print(f" Parsed Query 2 using: {parser2}")
+    print(f"✅ Parsed Query 1 using: {parser1}")
+    print(f"✅ Parsed Query 2 using: {parser2}")
 
     cols1 = extract_select_columns(parsed1, parser1)
     cols2 = extract_select_columns(parsed2, parser2)
@@ -164,11 +129,11 @@ def compare_sql_files(file1, file2):
     tbls1 = extract_tables(parsed1, parser1)
     tbls2 = extract_tables(parsed2, parser2)
 
-    joins1 = extract_joins(parsed1, parser1)
-    joins2 = extract_joins(parsed2, parser2)
+    joins1 = extract_all_joins(parsed1)
+    joins2 = extract_all_joins(parsed2)
 
-    where1 = extract_where(parsed1, parser1)
-    where2 = extract_where(parsed2, parser2)
+    wheres1 = extract_all_where(parsed1)
+    wheres2 = extract_all_where(parsed2)
 
     group1 = extract_groupby(parsed1, parser1)
     group2 = extract_groupby(parsed2, parser2)
@@ -181,16 +146,8 @@ def compare_sql_files(file1, file2):
     missing_joins1, missing_joins2 = compare_lists(joins1, joins2)
     missing_group1, missing_group2 = compare_lists(group1, group2)
 
-    where_diffs = [(where1, where2)] if where1 != where2 else []
+    where_diffs = [(wheres1, wheres2)] if wheres1 != wheres2 else []
     having_diffs = [(having1, having2)] if having1 != having2 else []
-
-    print("\\n=== GROUP BY COMPARISON ===")
-    print("Only in Query 1:", missing_group1)
-    print("Only in Query 2:", missing_group2)
-
-    print("\\n=== HAVING COMPARISON ===")
-    print("Query 1:", having1)
-    print("Query 2:", having2)
 
     verdict = "PASS" if not (missing_cols1 or missing_cols2 or missing_tbls1 or missing_tbls2 or missing_joins1 or missing_joins2 or where_diffs or missing_group1 or missing_group2 or having_diffs) else "REVIEW"
     summary = {
@@ -212,4 +169,3 @@ def compare_sql_files(file1, file2):
 
 if __name__ == "__main__":
     compare_sql_files("abc_query.sql", "obc_query.sql")
-
