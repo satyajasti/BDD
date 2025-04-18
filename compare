@@ -1,17 +1,28 @@
-# Recreate hybrid SQL comparison script after reset
-
-hybrid_compare_script = """
 import os
 import sys
 import sqlglot
 import pandas as pd
-from sqlglot import expressions as exp
+from sqlglot import parse_one
+from sqlglot.expressions import Select, Insert
 from moz_sql_parser import parse as moz_parse
 from datetime import datetime
 
+def extract_select_from_insert(sql_text):
+    try:
+        parsed = parse_one(sql_text, read="snowflake")
+        if isinstance(parsed, Insert):
+            select_part = parsed.args.get("expression")
+            return select_part.to_sql()
+    except Exception as e:
+        print(f"⚠️ Could not extract SELECT from INSERT: {e}")
+    return sql_text  # fallback
+
 def parse_with_sqlglot(sql_text):
     try:
-        return sqlglot.parse_one(sql_text).to_dict(), "sqlglot"
+        parsed = parse_one(sql_text, read="snowflake")
+        if isinstance(parsed, Insert):
+            parsed = parsed.args.get("expression")
+        return parsed.to_dict(), "sqlglot"
     except Exception as e:
         print(f"⚠️ sqlglot failed: {e}")
         return None, None
@@ -71,15 +82,16 @@ def compare_sql_files(file1, file2):
     with open(file2, "r") as f:
         sql2 = f.read()
 
-    # Try sqlglot first
-    parsed1, parser1 = parse_with_sqlglot(sql1)
-    parsed2, parser2 = parse_with_sqlglot(sql2)
+    sql1_clean = extract_select_from_insert(sql1)
+    sql2_clean = extract_select_from_insert(sql2)
 
-    # Fallback to moz if sqlglot fails
+    parsed1, parser1 = parse_with_sqlglot(sql1_clean)
+    parsed2, parser2 = parse_with_sqlglot(sql2_clean)
+
     if not parsed1:
-        parsed1, parser1 = parse_with_moz(sql1)
+        parsed1, parser1 = parse_with_moz(sql1_clean)
     if not parsed2:
-        parsed2, parser2 = parse_with_moz(sql2)
+        parsed2, parser2 = parse_with_moz(sql2_clean)
 
     if not parsed1 or not parsed2:
         print("❌ Failed to parse both queries.")
@@ -97,12 +109,11 @@ def compare_sql_files(file1, file2):
     missing_cols1, missing_cols2 = compare_lists(cols1, cols2)
     missing_tbls1, missing_tbls2 = compare_lists(tbls1, tbls2)
 
-    # Console output
-    print("\\n=== COLUMN COMPARISON ===")
+    print("\n=== COLUMN COMPARISON ===")
     print("Only in Query 1:", missing_cols1)
     print("Only in Query 2:", missing_cols2)
 
-    print("\\n=== TABLE COMPARISON ===")
+    print("\n=== TABLE COMPARISON ===")
     print("Only in Query 1:", missing_tbls1)
     print("Only in Query 2:", missing_tbls2)
 
@@ -122,9 +133,3 @@ def compare_sql_files(file1, file2):
 
 if __name__ == "__main__":
     compare_sql_files("abc_query.sql", "obc_query.sql")
-"""
-
-with open("/mnt/data/sql_compare_queries.py", "w") as f:
-    f.write(hybrid_compare_script.strip())
-
-"/mnt/data/sql_compare_queries.py"
