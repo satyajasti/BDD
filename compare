@@ -1,6 +1,20 @@
 import os
+import re
+import difflib
 import pandas as pd
 from sqlglot import parse_one, expressions as exp
+from moz_sql_parser import parse as moz_parse
+
+def sanitize_sql(sql_text):
+    sql_text = re.sub(r"--.*?$", "", sql_text, flags=re.MULTILINE)
+    sql_text = re.sub(r"/\*.*?\*/", "", sql_text, flags=re.DOTALL)
+    sql_text = re.sub(r"\s+", " ", sql_text).strip()
+    def fix_in_clause(match):
+        clause, values = match.group(1), match.group(2)
+        cleaned = ",".join([f"'{v.strip().strip("'")}'" for v in values.split(",")])
+        return f"{clause} ({cleaned})"
+    sql_text = re.sub(r"(IN|NOT IN)\s*\((.*?)\)", fix_in_clause, sql_text, flags=re.IGNORECASE)
+    return sql_text
 
 def extract_all(expr, clause_type):
     return [str(x).lower() for x in expr.find_all(clause_type)]
@@ -17,29 +31,56 @@ def compare_lists(list1, list2):
     set1, set2 = set(list1), set(list2)
     return list(set1 - set2), list(set2 - set1)
 
-def compare_sql_with_console_and_labels(file1, file2):
+def line_by_line_diff(sql1, sql2):
+    d = difflib.unified_diff(
+        sql1.splitlines(),
+        sql2.splitlines(),
+        fromfile="Query 1",
+        tofile="Query 2",
+        lineterm=""
+    )
+    return list(d)
+
+def try_parse_sql(sql_text):
+    try:
+        return parse_one(sql_text, read="snowflake"), "sqlglot"
+    except:
+        try:
+            return moz_parse(sql_text), "moz_sql_parser"
+        except Exception as e:
+            print(f"❌ Failed to parse with both parsers: {e}")
+            return None, "error"
+
+def compare_sql_robust(file1, file2):
     label1 = os.path.splitext(os.path.basename(file1))[0]
     label2 = os.path.splitext(os.path.basename(file2))[0]
 
     with open(file1, "r") as f1, open(file2, "r") as f2:
-        sql1 = f1.read()
-        sql2 = f2.read()
+        raw1, raw2 = f1.read(), f2.read()
 
-    parsed1 = parse_one(sql1, read="snowflake")
-    parsed2 = parse_one(sql2, read="snowflake")
+    sql1, sql2 = sanitize_sql(raw1), sanitize_sql(raw2)
+    parsed1, parser1 = try_parse_sql(sql1)
+    parsed2, parser2 = try_parse_sql(sql2)
 
-    def extract(parsed):
-        return {
-            "tables": extract_all(parsed, exp.Table),
-            "columns": extract_all(parsed, exp.Column),
-            "joins": extract_all(parsed, exp.Join),
-            "where": [str(w).lower() for w in parsed.find_all(exp.Where)] or ["<none>"],
-            "groupby": extract_groupby(parsed),
-            "having": extract_having(parsed)
-        }
+    if not parsed1 or not parsed2:
+        print("❌ Could not parse one or both SQLs. Aborting.")
+        return
 
-    data1 = extract(parsed1)
-    data2 = extract(parsed2)
+    def extract(parsed, parser_type):
+        if parser_type == "sqlglot":
+            return {
+                "tables": extract_all(parsed, exp.Table),
+                "columns": extract_all(parsed, exp.Column),
+                "joins": extract_all(parsed, exp.Join),
+                "where": extract_all(parsed, exp.Where) or ["<none>"],
+                "groupby": extract_groupby(parsed),
+                "having": extract_having(parsed)
+            }
+        else:
+            return {"tables": [], "columns": [], "joins": [], "where": [], "groupby": [], "having": ""}
+
+    data1 = extract(parsed1, parser1)
+    data2 = extract(parsed2, parser2)
 
     comparison = {}
     for key in data1:
@@ -56,7 +97,7 @@ def compare_sql_with_console_and_labels(file1, file2):
                 "match": data1[key] == data2[key]
             }
 
-    print(f"\n🔍 SQL Comparison Between: {label1} vs {label2}")
+    print(f"🔍 SQL Comparison Between: {label1} vs {label2}")
     for section, diff in comparison.items():
         print(f"\n=== {section.upper()} ===")
         if "match" in diff:
@@ -67,7 +108,11 @@ def compare_sql_with_console_and_labels(file1, file2):
             print(f"Only in {label1}:", diff[f"only_in_{label1}"])
             print(f"Only in {label2}:", diff[f"only_in_{label2}"])
 
-    report_name = f"sql_diff_report_{label1}_vs_{label2}.xlsx"
+    diff_lines = line_by_line_diff(raw1, raw2)
+    print("\n=== LINE BY LINE DIFF ===")
+    print("\n".join(diff_lines or ["✅ No line-level differences"]))
+
+    report_name = f"/mnt/data/sql_diff_report_{label1}_vs_{label2}.xlsx"
     with pd.ExcelWriter(report_name, engine="openpyxl", mode="w") as writer:
         for section, values in comparison.items():
             if "match" in values:
@@ -78,7 +123,7 @@ def compare_sql_with_console_and_labels(file1, file2):
                     f"Only in {label2}": values[f"only_in_{label2}"]
                 })
                 df.to_excel(writer, index=False, sheet_name=f"{section}_{label1}")
-    print(f"\nExcel report saved: {report_name}")
+        if diff_lines:
+            pd.DataFrame({"diff": diff_lines}).to_excel(writer, index=False, sheet_name="line_diff")
 
-# Example:
-# compare_sql_with_console_and_labels("abc_query.sql", "obc_query.sql")
+    print(f"📄 Excel report saved: {report_name}")
