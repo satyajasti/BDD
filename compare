@@ -1,171 +1,70 @@
 import os
-import sys
-import sqlglot
-import pandas as pd
 from sqlglot import parse_one, expressions as exp
-from moz_sql_parser import parse as moz_parse
+import pandas as pd
 from datetime import datetime
 
-def sanitize_sql_for_moz(sql):
-    return sql.strip().strip(';').replace('\n', ' ')
+def extract_all(expr, clause_type):
+    return [str(x).lower() for x in expr.find_all(clause_type)]
 
-def extract_select_from_insert(sql_text):
-    try:
-        parsed = parse_one(sql_text, read="snowflake")
-        if isinstance(parsed, exp.Insert):
-            select_part = parsed.args.get("expression")
-            return select_part.to_sql()
-    except Exception as e:
-        print(f"⚠️ Could not extract SELECT from INSERT: {e}")
-    return sql_text
+def extract_groupby(expr):
+    group_expr = expr.args.get("group")
+    return [str(e).lower() for e in group_expr] if group_expr else []
 
-def unwrap_subquery(expr):
-    if isinstance(expr, exp.Select):
-        return expr
-    elif isinstance(expr, exp.Subquery):
-        sub = expr.args.get("this")
-        if isinstance(sub, exp.Select):
-            return sub
-    elif isinstance(expr, exp.Alias) and isinstance(expr.args.get("this"), exp.Subquery):
-        sub = expr.args.get("this").args.get("this")
-        if isinstance(sub, exp.Select):
-            return sub
-    return expr
-
-def parse_with_sqlglot(sql_text):
-    try:
-        parsed = parse_one(sql_text, read="snowflake")
-        parsed = unwrap_subquery(parsed)
-        return parsed, "sqlglot"
-    except Exception as e:
-        print(f"⚠️ sqlglot failed: {e}")
-        return None, None
-
-def parse_with_moz(sql_text):
-    try:
-        return moz_parse(sanitize_sql_for_moz(sql_text)), "moz_sql_parser"
-    except Exception as e:
-        print(f"❌ moz_sql_parser also failed: {e}")
-        return None, None
-
-def extract_all_where(parsed):
-    return [str(where).lower() for where in parsed.find_all(exp.Where)]
-
-def extract_all_joins(parsed):
-    return [str(join).lower() for join in parsed.find_all(exp.Join)]
-
-def extract_select_columns(parsed, parser_type):
-    try:
-        if parser_type == "sqlglot":
-            return [str(col).lower() for col in parsed.expressions]
-    except Exception as e:
-        print(f"Error extracting columns: {e}")
-    return []
-
-def extract_tables(parsed, parser_type):
-    try:
-        if parser_type == "sqlglot":
-            from_ = parsed.args.get("from")
-            return [str(tbl).lower() for tbl in from_] if from_ else []
-    except Exception as e:
-        print(f"Error extracting tables: {e}")
-    return []
-
-def extract_groupby(parsed, parser_type):
-    try:
-        if parser_type == "sqlglot":
-            group_expr = parsed.args.get("group")
-            return [str(e).lower() for e in group_expr] if group_expr else []
-    except Exception as e:
-        print(f"Error extracting GROUP BY: {e}")
-    return []
-
-def extract_having(parsed, parser_type):
-    try:
-        if parser_type == "sqlglot":
-            having_expr = parsed.args.get("having")
-            return str(having_expr).lower() if having_expr else ""
-    except Exception as e:
-        print(f"Error extracting HAVING: {e}")
-    return ""
+def extract_having(expr):
+    having_expr = expr.args.get("having")
+    return str(having_expr).lower() if having_expr else ""
 
 def compare_lists(list1, list2):
     set1, set2 = set(list1), set(list2)
     return list(set1 - set2), list(set2 - set1)
 
-def generate_excel_report(table_diffs, column_diffs, join_diffs, where_diffs, groupby_diffs, having_diffs, summary, output_path="sql_diff_report.xlsx"):
-    with pd.ExcelWriter(output_path, engine="openpyxl", mode="w") as writer:
-        pd.DataFrame(table_diffs, columns=["Only in Query 1", "Only in Query 2"]).to_excel(writer, index=False, sheet_name="Table_Diff")
-        pd.DataFrame(column_diffs, columns=["Only in Query 1", "Only in Query 2"]).to_excel(writer, index=False, sheet_name="Column_Diff")
-        pd.DataFrame(join_diffs, columns=["Only in Query 1", "Only in Query 2"]).to_excel(writer, index=False, sheet_name="Join_Diff")
-        pd.DataFrame(where_diffs, columns=["Query 1", "Query 2"]).to_excel(writer, index=False, sheet_name="Where_Diff")
-        pd.DataFrame(groupby_diffs, columns=["Only in Query 1", "Only in Query 2"]).to_excel(writer, index=False, sheet_name="GroupBy_Diff")
-        pd.DataFrame(having_diffs, columns=["Query 1", "Query 2"]).to_excel(writer, index=False, sheet_name="Having_Diff")
-        pd.DataFrame([summary]).to_excel(writer, index=False, sheet_name="Summary")
-    print(f"📄 Excel report saved to: {output_path}")
+def compare_queries(file1, file2):
+    with open(file1, "r") as f1, open(file2, "r") as f2:
+        sql1 = f1.read()
+        sql2 = f2.read()
 
-def compare_sql_files(file1, file2):
-    with open(file1, "r") as f:
-        sql1 = f.read()
-    with open(file2, "r") as f:
-        sql2 = f.read()
+    parsed1 = parse_one(sql1, read="snowflake")
+    parsed2 = parse_one(sql2, read="snowflake")
 
-    sql1_clean = extract_select_from_insert(sql1)
-    sql2_clean = extract_select_from_insert(sql2)
+    def extract(parsed):
+        return {
+            "tables": extract_all(parsed, exp.Table),
+            "columns": extract_all(parsed, exp.Column),
+            "joins": extract_all(parsed, exp.Join),
+            "where": extract_all(parsed, exp.Where),
+            "groupby": extract_groupby(parsed),
+            "having": extract_having(parsed)
+        }
 
-    parsed1, parser1 = parse_with_sqlglot(sql1_clean)
-    parsed2, parser2 = parse_with_sqlglot(sql2_clean)
+    data1 = extract(parsed1)
+    data2 = extract(parsed2)
 
-    if not parsed1 or not parsed2:
-        print("❌ Failed to parse both queries.")
-        return
+    result = {}
+    for key in data1:
+        if isinstance(data1[key], list):
+            only1, only2 = compare_lists(data1[key], data2[key])
+            result[key] = {"only_in_query_1": only1, "only_in_query_2": only2}
+        else:
+            result[key] = {
+                "query_1": data1[key],
+                "query_2": data2[key],
+                "match": data1[key] == data2[key]
+            }
 
-    print(f"✅ Parsed Query 1 using: {parser1}")
-    print(f"✅ Parsed Query 2 using: {parser2}")
+    output = pd.ExcelWriter("sql_comparison_report.xlsx", engine='openpyxl')
+    for section, values in result.items():
+        if isinstance(values, dict) and "only_in_query_1" in values:
+            df = pd.DataFrame({
+                "Only in Query 1": values["only_in_query_1"],
+                "Only in Query 2": values["only_in_query_2"]
+            })
+            df.to_excel(output, sheet_name=section.capitalize(), index=False)
+        else:
+            df = pd.DataFrame([values])
+            df.to_excel(output, sheet_name=section.capitalize(), index=False)
+    output.close()
 
-    cols1 = extract_select_columns(parsed1, parser1)
-    cols2 = extract_select_columns(parsed2, parser2)
+    print("✅ Comparison complete. Report: sql_comparison_report.xlsx")
 
-    tbls1 = extract_tables(parsed1, parser1)
-    tbls2 = extract_tables(parsed2, parser2)
-
-    joins1 = extract_all_joins(parsed1)
-    joins2 = extract_all_joins(parsed2)
-
-    wheres1 = extract_all_where(parsed1)
-    wheres2 = extract_all_where(parsed2)
-
-    group1 = extract_groupby(parsed1, parser1)
-    group2 = extract_groupby(parsed2, parser2)
-
-    having1 = extract_having(parsed1, parser1)
-    having2 = extract_having(parsed2, parser2)
-
-    missing_cols1, missing_cols2 = compare_lists(cols1, cols2)
-    missing_tbls1, missing_tbls2 = compare_lists(tbls1, tbls2)
-    missing_joins1, missing_joins2 = compare_lists(joins1, joins2)
-    missing_group1, missing_group2 = compare_lists(group1, group2)
-
-    where_diffs = [(wheres1, wheres2)] if wheres1 != wheres2 else []
-    having_diffs = [(having1, having2)] if having1 != having2 else []
-
-    verdict = "PASS" if not (missing_cols1 or missing_cols2 or missing_tbls1 or missing_tbls2 or missing_joins1 or missing_joins2 or where_diffs or missing_group1 or missing_group2 or having_diffs) else "REVIEW"
-    summary = {
-        "Query 1": os.path.basename(file1),
-        "Query 2": os.path.basename(file2),
-        "Verdict": verdict,
-        "Generated On": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    }
-
-    generate_excel_report(
-        table_diffs=[(missing_tbls1[i] if i < len(missing_tbls1) else "", missing_tbls2[i] if i < len(missing_tbls2) else "") for i in range(max(len(missing_tbls1), len(missing_tbls2)))],
-        column_diffs=[(missing_cols1[i] if i < len(missing_cols1) else "", missing_cols2[i] if i < len(missing_cols2) else "") for i in range(max(len(missing_cols1), len(missing_cols2)))],
-        join_diffs=[(missing_joins1[i] if i < len(missing_joins1) else "", missing_joins2[i] if i < len(missing_joins2) else "") for i in range(max(len(missing_joins1), len(missing_joins2)))],
-        where_diffs=where_diffs,
-        groupby_diffs=[(missing_group1[i] if i < len(missing_group1) else "", missing_group2[i] if i < len(missing_group2) else "") for i in range(max(len(missing_group1), len(missing_group2)))],
-        having_diffs=having_diffs,
-        summary=summary
-    )
-
-if __name__ == "__main__":
-    compare_sql_files("abc_query.sql", "obc_query.sql")
+# Example usage
+compare_queries("abc_query.sql", "obc_query.sql")
