@@ -78,7 +78,7 @@ def compare_sql_with_console_and_labels(file1, file2):
                     f"Only in {label2}": values[f"only_in_{label2}"]
                 })
                 df.to_excel(writer, index=False, sheet_name=f"{section}_{label1}")
-    print(f"\n📄 Excel report saved: {report_name}")
+    print(f"\nExcel report saved: {report_name}")
 
 # Example:
 # compare_sql_with_console_and_labels("abc_query.sql", "obc_query.sql")
