@@ -1,7 +1,6 @@
 import os
-from sqlglot import parse_one, expressions as exp
 import pandas as pd
-from datetime import datetime
+from sqlglot import parse_one, expressions as exp
 
 def extract_all(expr, clause_type):
     return [str(x).lower() for x in expr.find_all(clause_type)]
@@ -12,13 +11,16 @@ def extract_groupby(expr):
 
 def extract_having(expr):
     having_expr = expr.args.get("having")
-    return str(having_expr).lower() if having_expr else ""
+    return str(having_expr).lower() if having_expr else "<none>"
 
 def compare_lists(list1, list2):
     set1, set2 = set(list1), set(list2)
     return list(set1 - set2), list(set2 - set1)
 
-def compare_queries(file1, file2):
+def compare_sql_with_console_and_labels(file1, file2):
+    label1 = os.path.splitext(os.path.basename(file1))[0]
+    label2 = os.path.splitext(os.path.basename(file2))[0]
+
     with open(file1, "r") as f1, open(file2, "r") as f2:
         sql1 = f1.read()
         sql2 = f2.read()
@@ -31,7 +33,7 @@ def compare_queries(file1, file2):
             "tables": extract_all(parsed, exp.Table),
             "columns": extract_all(parsed, exp.Column),
             "joins": extract_all(parsed, exp.Join),
-            "where": extract_all(parsed, exp.Where),
+            "where": [str(w).lower() for w in parsed.find_all(exp.Where)] or ["<none>"],
             "groupby": extract_groupby(parsed),
             "having": extract_having(parsed)
         }
@@ -39,32 +41,44 @@ def compare_queries(file1, file2):
     data1 = extract(parsed1)
     data2 = extract(parsed2)
 
-    result = {}
+    comparison = {}
     for key in data1:
         if isinstance(data1[key], list):
             only1, only2 = compare_lists(data1[key], data2[key])
-            result[key] = {"only_in_query_1": only1, "only_in_query_2": only2}
+            comparison[key] = {
+                f"only_in_{label1}": only1,
+                f"only_in_{label2}": only2
+            }
         else:
-            result[key] = {
-                "query_1": data1[key],
-                "query_2": data2[key],
+            comparison[key] = {
+                label1: data1[key],
+                label2: data2[key],
                 "match": data1[key] == data2[key]
             }
 
-    output = pd.ExcelWriter("sql_comparison_report.xlsx", engine='openpyxl')
-    for section, values in result.items():
-        if isinstance(values, dict) and "only_in_query_1" in values:
-            df = pd.DataFrame({
-                "Only in Query 1": values["only_in_query_1"],
-                "Only in Query 2": values["only_in_query_2"]
-            })
-            df.to_excel(output, sheet_name=section.capitalize(), index=False)
+    print(f"\n🔍 SQL Comparison Between: {label1} vs {label2}")
+    for section, diff in comparison.items():
+        print(f"\n=== {section.upper()} ===")
+        if "match" in diff:
+            print(f"{label1}: {diff[label1]}")
+            print(f"{label2}: {diff[label2]}")
+            print("✅ Match" if diff["match"] else "❌ Mismatch")
         else:
-            df = pd.DataFrame([values])
-            df.to_excel(output, sheet_name=section.capitalize(), index=False)
-    output.close()
+            print(f"Only in {label1}:", diff[f"only_in_{label1}"])
+            print(f"Only in {label2}:", diff[f"only_in_{label2}"])
 
-    print("✅ Comparison complete. Report: sql_comparison_report.xlsx")
+    report_name = f"sql_diff_report_{label1}_vs_{label2}.xlsx"
+    with pd.ExcelWriter(report_name, engine="openpyxl", mode="w") as writer:
+        for section, values in comparison.items():
+            if "match" in values:
+                pd.DataFrame([values]).to_excel(writer, index=False, sheet_name=f"{section}_{label1}")
+            else:
+                df = pd.DataFrame({
+                    f"Only in {label1}": values[f"only_in_{label1}"],
+                    f"Only in {label2}": values[f"only_in_{label2}"]
+                })
+                df.to_excel(writer, index=False, sheet_name=f"{section}_{label1}")
+    print(f"\n📄 Excel report saved: {report_name}")
 
-# Example usage
-compare_queries("abc_query.sql", "obc_query.sql")
+# Example:
+# compare_sql_with_console_and_labels("abc_query.sql", "obc_query.sql")
