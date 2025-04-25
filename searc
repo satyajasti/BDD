@@ -23,11 +23,11 @@ def copy_sql_scripts_from_list(excel_path, source_dir, target_dir, summary_outpu
                 break
 
         if not found:
-            print(f"✅ Copied: {script_name}")
-            status_list.append({"Script_Name": script_name, "Status": "Copied", "Error": ""})
-        except FileNotFoundError:
             print(f"❌ Not found: {script_name}")
             status_list.append({"Script_Name": script_name, "Status": "Not Found", "Error": "File not found"})
+            print(f"✅ Copied: {script_name}")
+            status_list.append({"Script_Name": script_name, "Status": "Copied", "Error": ""})
+        # handled by recursive search
         except Exception as e:
             print(f"⚠️ Error copying {script_name}: {e}")
             status_list.append({"Script_Name": script_name, "Status": "Error", "Error": str(e)})
