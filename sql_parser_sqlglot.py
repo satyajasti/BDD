@@ -32,32 +32,35 @@ def extract_joins_using_sqlglot(sql_text):
         right = join.expression
         on_condition = join.args.get('on')
 
-        # Left Table
-        left_table = left.sql() if left else 'UNKNOWN_LEFT'
-        if left_table in alias_to_table:
-            left_table = alias_to_table[left_table]
+        # Left Alias and Real Table
+        left_alias = left.alias_or_name if left and hasattr(left, 'alias_or_name') else (left.sql() if left else 'UNKNOWN_LEFT')
+        left_real_table = alias_to_table.get(left_alias, left_alias)
 
-        # Right Table
+        # Right Alias and Real Table
         if right:
             if isinstance(right, sqlglot.exp.Table):
-                right_table = right.sql()
+                right_alias = right.alias_or_name if right.alias_or_name else right.name
+                right_real_table = alias_to_table.get(right_alias, right.sql())
             elif isinstance(right, sqlglot.exp.Alias):
-                right_table = right.this.sql()
+                right_alias = right.alias_or_name if right.alias_or_name else right.this.sql()
+                right_real_table = alias_to_table.get(right_alias, right.this.sql())
             elif isinstance(right, sqlglot.exp.Subquery):
-                right_table = f"SUBQUERY_{right.alias_or_name}" if right.alias_or_name else 'SUBQUERY'
+                right_alias = right.alias_or_name if right.alias_or_name else 'SUBQUERY'
+                right_real_table = f"SUBQUERY_{right_alias}" if right_alias else 'SUBQUERY'
             else:
-                right_table = 'UNKNOWN_RIGHT'
+                right_alias = 'UNKNOWN_RIGHT'
+                right_real_table = 'UNKNOWN_RIGHT'
         else:
-            right_table = 'UNKNOWN_RIGHT'
-
-        if right_table in alias_to_table:
-            right_table = alias_to_table[right_table]
+            right_alias = 'UNKNOWN_RIGHT'
+            right_real_table = 'UNKNOWN_RIGHT'
 
         join_condition = on_condition.sql() if on_condition else 'UNKNOWN'
 
         joins_info.append({
-            'Left_Table': left_table,
-            'Right_Table': right_table,
+            'Left_Alias': left_alias,
+            'Left_Real_Table': left_real_table,
+            'Right_Alias': right_alias,
+            'Right_Real_Table': right_real_table,
             'Join_Type': join_type,
             'Join_Condition': join_condition
         })
