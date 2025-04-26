@@ -5,21 +5,54 @@ import os
 def extract_joins_using_sqlglot(sql_text):
     """
     Parses SQL using sqlglot and extracts all JOINs (INNER, LEFT, RIGHT, FULL, etc.)
+    Resolves aliases to real table names.
     Returns a list of dictionaries.
     """
     parsed = sqlglot.parse_one(sql_text)
     joins_info = []
+    alias_to_table = {}
 
-    # Find all JOIN nodes in the AST
+    # First pass: find alias mappings from FROM and WITH clauses
+    for from_exp in parsed.find_all(sqlglot.exp.From):
+        for table in from_exp.find_all(sqlglot.exp.Table):
+            if table.alias:
+                alias_to_table[table.alias] = table.this.sql()
+            else:
+                alias_to_table[table.sql()] = table.sql()
+
+    for with_exp in parsed.find_all(sqlglot.exp.With):
+        for cte in with_exp.expressions:
+            if isinstance(cte, sqlglot.exp.CTE):
+                alias_to_table[cte.alias_or_name] = cte.this.sql()
+
+    # Second pass: find JOINs
     for join in parsed.find_all(sqlglot.exp.Join):
-        join_type = (join.args.get('kind') or 'INNER').upper()  # default to INNER JOIN if kind missing
-        left = join.this  # Left side of join
-        right = join.expression  # Right side of join
+        join_type = (join.args.get('kind') or 'INNER').upper()
+        left = join.this
+        right = join.expression
         on_condition = join.args.get('on')
 
-        # Try extracting table names
+        # Left Table
         left_table = left.sql() if left else 'UNKNOWN_LEFT'
-        right_table = right.sql() if right else 'UNKNOWN_RIGHT'
+        if left_table in alias_to_table:
+            left_table = alias_to_table[left_table]
+
+        # Right Table
+        if right:
+            if isinstance(right, sqlglot.exp.Table):
+                right_table = right.sql()
+            elif isinstance(right, sqlglot.exp.Alias):
+                right_table = right.this.sql()
+            elif isinstance(right, sqlglot.exp.Subquery):
+                right_table = f"SUBQUERY_{right.alias_or_name}" if right.alias_or_name else 'SUBQUERY'
+            else:
+                right_table = 'UNKNOWN_RIGHT'
+        else:
+            right_table = 'UNKNOWN_RIGHT'
+
+        if right_table in alias_to_table:
+            right_table = alias_to_table[right_table]
+
         join_condition = on_condition.sql() if on_condition else 'UNKNOWN'
 
         joins_info.append({
@@ -30,7 +63,6 @@ def extract_joins_using_sqlglot(sql_text):
         })
 
     return joins_info
-
 
 def save_joins_to_excel(joins_list, output_path):
     """
@@ -43,7 +75,6 @@ def save_joins_to_excel(joins_list, output_path):
 
     df.to_excel(output_path, index=False)
     print(f'✅ Parsed joins saved to: {output_path}')
-
 
 if __name__ == "__main__":
     sql_file_path = "input/your_query.sql"
