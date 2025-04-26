@@ -1,98 +1,104 @@
-import sqlglot
+import re
 import pandas as pd
-import os
 
-def extract_joins_using_sqlglot(sql_text):
+def smart_extract_joins(sql_text):
     """
-    Parses SQL using sqlglot and extracts all JOINs (INNER, LEFT, RIGHT, FULL, etc.)
-    Resolves aliases to real table names.
-    Returns a list of dictionaries.
+    Smarter SQL JOIN extractor: walks through SQL, handles aliases, detects JOINs properly.
     """
-    parsed = sqlglot.parse_one(sql_text)
-    joins_info = []
-    alias_to_table = {}
+    sql_text = re.sub(r'\s+', ' ', sql_text.strip())  # Flatten spaces
+    tokens = sql_text.split(' ')
 
-    # First pass: find alias mappings from FROM and WITH clauses
-    for from_exp in parsed.find_all(sqlglot.exp.From):
-        for table in from_exp.find_all(sqlglot.exp.Table):
-            if table.alias:
-                alias_to_table[table.alias] = table.this.sql()
+    joins = []
+    current_left_alias = None
+    current_left_table = None
+    alias_mapping = {}
+
+    i = 0
+    while i < len(tokens):
+        token = tokens[i].upper()
+
+        # Detect FROM <table> <alias>
+        if token == 'FROM' and i + 2 < len(tokens):
+            table = tokens[i + 1]
+            possible_alias = tokens[i + 2]
+
+            if possible_alias.upper() not in ('INNER', 'LEFT', 'RIGHT', 'JOIN', 'ON', 'WHERE', 'GROUP', 'ORDER'):
+                alias_mapping[possible_alias] = table
+                current_left_alias = possible_alias
+                current_left_table = table
+                i += 2
             else:
-                alias_to_table[table.sql()] = table.sql()
+                current_left_alias = None
+                current_left_table = table
+                i += 1
 
-    for with_exp in parsed.find_all(sqlglot.exp.With):
-        for cte in with_exp.expressions:
-            if isinstance(cte, sqlglot.exp.CTE):
-                alias_to_table[cte.alias_or_name] = cte.this.sql()
+        # Detect JOIN
+        elif token in ('JOIN', 'INNER', 'LEFT', 'RIGHT'):
+            join_type = 'INNER JOIN'  # default
+            if token != 'JOIN':
+                join_type = token + ' JOIN'
+                i += 1  # skip "JOIN"
 
-    # Second pass: find JOINs
-    for join in parsed.find_all(sqlglot.exp.Join):
-        join_type = (join.args.get('kind') or 'INNER').upper()
-        left = join.this
-        right = join.expression
-        on_condition = join.args.get('on')
+            if i + 2 < len(tokens):
+                right_table = tokens[i + 1]
+                possible_alias = tokens[i + 2]
 
-        # Left Alias and Real Table
-        left_alias = left.alias_or_name if left and hasattr(left, 'alias_or_name') else (left.sql() if left else 'UNKNOWN_LEFT')
-        left_real_table = alias_to_table.get(left_alias, left_alias)
+                right_alias = None
+                if possible_alias.upper() not in ('ON', 'INNER', 'LEFT', 'RIGHT', 'JOIN', 'WHERE', 'GROUP', 'ORDER'):
+                    right_alias = possible_alias
+                    alias_mapping[right_alias] = right_table
+                    i += 1  # skip alias
 
-        # Right Alias and Real Table
-        if right:
-            if isinstance(right, sqlglot.exp.Table):
-                right_alias = right.alias_or_name if right.alias_or_name else right.name
-                right_real_table = alias_to_table.get(right_alias, right.sql())
-            elif isinstance(right, sqlglot.exp.Alias):
-                right_alias = right.alias_or_name if right.alias_or_name else right.this.sql()
-                right_real_table = alias_to_table.get(right_alias, right.this.sql())
-            elif isinstance(right, sqlglot.exp.Subquery):
-                right_alias = right.alias_or_name if right.alias_or_name else 'SUBQUERY'
-                right_real_table = f"SUBQUERY_{right_alias}" if right_alias else 'SUBQUERY'
+                # Now look for ON condition
+                join_keys_left = []
+                join_keys_right = []
+
+                # Find ON
+                while i < len(tokens) and tokens[i].upper() != 'ON':
+                    i += 1
+                if i < len(tokens) and tokens[i].upper() == 'ON':
+                    i += 1  # move to condition
+                    # Start capturing condition
+                    condition = ''
+                    while i < len(tokens) and tokens[i].upper() not in ('INNER', 'LEFT', 'RIGHT', 'JOIN', 'WHERE', 'GROUP', 'ORDER'):
+                        condition += tokens[i] + ' '
+                        i += 1
+                    # Parse condition for join keys
+                    join_matches = re.findall(r'(\w+)\.(\w+)\s*=\s*(\w+)\.(\w+)', condition, re.IGNORECASE)
+                    for match in join_matches:
+                        left_alias, left_col, right_alias2, right_col = match
+                        join_keys_left.append(left_col)
+                        join_keys_right.append(right_col)
+
+                joins.append({
+                    'Left_Table': alias_mapping.get(current_left_alias, 'Derived/Temp'),
+                    'Left_Alias': current_left_alias,
+                    'Right_Table': right_table,
+                    'Right_Alias': right_alias,
+                    'Join_Type': join_type,
+                    'Join_Keys_Left': ', '.join(join_keys_left),
+                    'Join_Keys_Right': ', '.join(join_keys_right)
+                })
+
+                # After JOIN, the right side becomes the new left
+                current_left_alias = right_alias
+                current_left_table = right_table
             else:
-                right_alias = 'UNKNOWN_RIGHT'
-                right_real_table = 'UNKNOWN_RIGHT'
+                i += 1
         else:
-            right_alias = 'UNKNOWN_RIGHT'
-            right_real_table = 'UNKNOWN_RIGHT'
+            i += 1
 
-        join_condition = on_condition.sql() if on_condition else 'UNKNOWN'
-
-        joins_info.append({
-            'Left_Alias': left_alias,
-            'Left_Real_Table': left_real_table,
-            'Right_Alias': right_alias,
-            'Right_Real_Table': right_real_table,
-            'Join_Type': join_type,
-            'Join_Condition': join_condition
-        })
-
-    return joins_info
-
-def save_joins_to_excel(joins_list, output_path):
-    """
-    Save extracted joins into Excel for review.
-    """
-    df = pd.DataFrame(joins_list)
-    output_dir = os.path.dirname(output_path)
-    if output_dir:
-        os.makedirs(output_dir, exist_ok=True)
-
-    df.to_excel(output_path, index=False)
-    print(f'✅ Parsed joins saved to: {output_path}')
+    return joins
 
 if __name__ == "__main__":
-    sql_file_path = "input/your_query.sql"
-    output_excel_path = "output/parsed_joins_sqlglot.xlsx"
-
-    # Read SQL
-    with open(sql_file_path, 'r') as f:
+    # Example usage
+    with open("input/your_query.sql", 'r') as f:
         sql_text = f.read()
 
-    # Extract joins
-    joins = extract_joins_using_sqlglot(sql_text)
+    joins = smart_extract_joins(sql_text)
 
-    # Save to Excel
-    save_joins_to_excel(joins, output_excel_path)
+    df = pd.DataFrame(joins)
+    df.to_excel("output/smart_parsed_joins.xlsx", index=False)
 
-    # Print extracted joins
-    for join in joins:
-        print(join)
+    print("Smart join parsing completed!")
+    print(df)
