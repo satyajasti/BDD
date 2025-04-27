@@ -3,6 +3,14 @@ import pandas as pd
 from snowflake_connection import get_snowflake_connection
 import re
 
+def smart_load_joins(input_file):
+    df = pd.read_excel(input_file)
+    if 'left_keys' in df.columns:
+        df['left_keys'] = df['left_keys'].apply(lambda x: str(x).split(', ') if pd.notnull(x) else [])
+    if 'right_keys' in df.columns:
+        df['right_keys'] = df['right_keys'].apply(lambda x: str(x).split(', ') if pd.notnull(x) else [])
+    return df.to_dict(orient='records')
+
 def check_table_exists(conn, database, schema, table_name):
     query = f"""
     SELECT COUNT(*)
@@ -142,7 +150,7 @@ if __name__ == "__main__":
 
     conn, *_ = get_snowflake_connection("config.json")
 
-    joins_list = pd.read_excel(input_file).to_dict(orient='records')
+    joins_list = smart_load_joins(input_file)
 
     result_df = validate_joins_from_list(joins_list, conn)
 
