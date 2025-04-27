@@ -50,6 +50,12 @@ def smart_extract_joins(sql_text):
 
             if i + 1 < len(tokens):
                 right_table = tokens[i + 1]
+
+                # Skip joins with subqueries
+                if right_table.startswith('(') or right_table.upper().startswith('SELECT'):
+                    i += 1
+                    continue
+
                 right_alias = None
                 if i + 2 < len(tokens):
                     possible_alias = tokens[i + 2]
@@ -77,9 +83,9 @@ def smart_extract_joins(sql_text):
 
                 joins.append({
                     'Left_Table': alias_mapping.get(current_left_alias, 'Derived/Temp'),
-                    'Left_Alias': current_left_alias,
+                    'Left_Alias': current_left_alias if current_left_alias not in (None, '.') else None,
                     'Right_Table': right_table,
-                    'Right_Alias': right_alias,
+                    'Right_Alias': right_alias if right_alias not in (None, '.') else None,
                     'Join_Type': join_type,
                     'Join_Keys_Left': ', '.join(join_keys_left),
                     'Join_Keys_Right': ', '.join(join_keys_right)
@@ -111,7 +117,7 @@ if __name__ == "__main__":
     with open(output_clean_sql, 'w') as f:
         f.write(cleaned_sql)
 
-    print(f"✅ Advanced cleaned SQL saved to {output_clean_sql}")
+    print(f" Advanced cleaned SQL saved to {output_clean_sql}")
 
     # Step 2: Parse joins
     joins = smart_extract_joins(cleaned_sql)
@@ -119,5 +125,5 @@ if __name__ == "__main__":
     df = pd.DataFrame(joins)
     df.to_excel(output_joins_excel, index=False)
 
-    print(f"✅ Smart joins extracted and saved to {output_joins_excel}")
+    print(f" Smart joins extracted and saved to {output_joins_excel}")
     print(df)
