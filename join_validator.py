@@ -6,15 +6,18 @@ import re
 def smart_load_joins(input_file):
     df = pd.read_excel(input_file)
 
-    # Standardize column names to match expected keys
+    # Normalize all column names (lowercase, no spaces)
+    df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_')
+
+    # Rename normalized columns to expected names
     df.rename(columns={
-        'Left_Table': 'left_table',
-        'Right_Table': 'right_table',
-        'Left_Join_Columns': 'left_keys',
-        'Right_Join_Columns': 'right_keys',
-        'Join_Type': 'join_type',
-        'Join Keys Left': 'left_keys',
-        'Join Keys Right': 'right_keys'
+        'left_table': 'left_table',
+        'right_table': 'right_table',
+        'left_join_columns': 'left_keys',
+        'right_join_columns': 'right_keys',
+        'join_keys_left': 'left_keys',
+        'join_keys_right': 'right_keys',
+        'join_type': 'join_type'
     }, inplace=True)
 
     # Auto-split keys into lists
