@@ -28,6 +28,14 @@ def smart_load_joins(input_file):
 
     return df.to_dict(orient='records')
 
+def smart_split_table(full_table_name):
+    parts = full_table_name.strip().split('.')
+    parts = [p.strip() for p in parts if p.strip() != '']
+    if len(parts) == 3:
+        return parts[0], parts[1], parts[2]
+    else:
+        raise ValueError(f"Invalid table name format: {full_table_name}")
+
 def check_table_exists(conn, database, schema, table_name):
     query = f"""
     SELECT COUNT(*)
@@ -35,6 +43,7 @@ def check_table_exists(conn, database, schema, table_name):
     WHERE TABLE_SCHEMA = '{schema}'
     AND TABLE_NAME = '{table_name}'
     """
+    print(f"\n🔍 Checking Table Existence with Query:\n{query}")
     cur = conn.cursor()
     cur.execute(query)
     exists = cur.fetchone()[0] > 0
@@ -120,11 +129,11 @@ def validate_joins_from_list(joins_list, conn):
             continue
 
         try:
-            left_db, left_schema, left_table_name = left_table.split(".")
-            right_db, right_schema, right_table_name = right_table.split(".")
-        except ValueError:
-            results.append({**join, "Validation_Status": "Skipped - Table name invalid format"})
-            print("⚠️ Skipped - Table name invalid format")
+            left_db, left_schema, left_table_name = smart_split_table(left_table)
+            right_db, right_schema, right_table_name = smart_split_table(right_table)
+        except ValueError as e:
+            results.append({**join, "Validation_Status": f"Skipped - {e}"})
+            print(f"⚠️ Skipped - {e}")
             continue
 
         left_exists = check_table_exists(conn, left_db, left_schema, left_table_name)
