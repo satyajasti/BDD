@@ -2,15 +2,7 @@ import os
 import re
 import pandas as pd
 import sqlparse
-
-def clean_sql_script(sql_text):
-    parsed = sqlparse.parse(sql_text)[0]
-    cleaned_tokens = []
-    for token in parsed.flatten():
-        if not token.is_whitespace and not token.is_comment:
-            cleaned_tokens.append(str(token))
-    cleaned_sql = ' '.join(cleaned_tokens)
-    return cleaned_sql
+from sql_cleaner_advanced import advanced_clean_sql
 
 def smart_extract_joins(sql_text):
     sql_text = re.sub(r'\s+', ' ', sql_text.strip())
@@ -114,12 +106,12 @@ if __name__ == "__main__":
     with open(input_raw_sql, 'r') as f:
         raw_sql = f.read()
 
-    cleaned_sql = clean_sql_script(raw_sql)
+    cleaned_sql = advanced_clean_sql(raw_sql)
 
     with open(output_clean_sql, 'w') as f:
         f.write(cleaned_sql)
 
-    print(f"✅ SQL cleaned and saved to {output_clean_sql}")
+    print(f"✅ Advanced cleaned SQL saved to {output_clean_sql}")
 
     # Step 2: Parse joins
     joins = smart_extract_joins(cleaned_sql)
