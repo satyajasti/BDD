@@ -1,16 +1,19 @@
+import os
 import re
 import pandas as pd
+import sqlparse
 
-def clean_condition_functions(condition):
-    # Remove TRIM(), CAST(), UPPER(), LOWER(), etc.
-    condition = re.sub(r'TRIM\((.*?)\)', r'\1', condition, flags=re.IGNORECASE)
-    condition = re.sub(r'CAST\((.*?)\s+AS\s+.*?\)', r'\1', condition, flags=re.IGNORECASE)
-    condition = re.sub(r'UPPER\((.*?)\)', r'\1', condition, flags=re.IGNORECASE)
-    condition = re.sub(r'LOWER\((.*?)\)', r'\1', condition, flags=re.IGNORECASE)
-    return condition
+def clean_sql_script(sql_text):
+    parsed = sqlparse.parse(sql_text)[0]
+    cleaned_tokens = []
+    for token in parsed.flatten():
+        if not token.is_whitespace and not token.is_comment:
+            cleaned_tokens.append(str(token))
+    cleaned_sql = ' '.join(cleaned_tokens)
+    return cleaned_sql
 
 def smart_extract_joins(sql_text):
-    sql_text = re.sub(r'\s+', ' ', sql_text.strip())  # Flatten spaces
+    sql_text = re.sub(r'\s+', ' ', sql_text.strip())
     tokens = sql_text.split(' ')
 
     joins = []
@@ -25,71 +28,73 @@ def smart_extract_joins(sql_text):
         if token == 'FROM' and i + 2 < len(tokens):
             table = tokens[i + 1]
             possible_alias = tokens[i + 2]
-
-            if is_valid_table_name(table):
-                if is_valid_alias(possible_alias):
-                    alias_mapping[possible_alias] = table
-                    current_left_alias = possible_alias
-                    current_left_table = table
-                    i += 2
-                else:
-                    current_left_alias = None
-                    current_left_table = table
-                    i += 1
+            if possible_alias.upper() not in ('INNER', 'LEFT', 'RIGHT', 'JOIN', 'ON', 'WHERE', 'GROUP', 'ORDER', 'OUTER'):
+                alias_mapping[possible_alias] = table
+                current_left_alias = possible_alias
+                current_left_table = table
+                i += 2
             else:
+                current_left_alias = None
+                current_left_table = table
                 i += 1
 
         elif token in ('JOIN', 'INNER', 'LEFT', 'RIGHT'):
             join_type = 'INNER JOIN'
-            if token != 'JOIN':
-                join_type = token + ' JOIN'
-                i += 1
+            if token == 'LEFT':
+                if i + 2 < len(tokens) and tokens[i + 1].upper() == 'OUTER' and tokens[i + 2].upper() == 'JOIN':
+                    join_type = 'LEFT OUTER JOIN'
+                    i += 2
+                elif i + 1 < len(tokens) and tokens[i + 1].upper() == 'JOIN':
+                    join_type = 'LEFT JOIN'
+                    i += 1
+            elif token == 'RIGHT':
+                if i + 1 < len(tokens) and tokens[i + 1].upper() == 'JOIN':
+                    join_type = 'RIGHT JOIN'
+                    i += 1
+            elif token == 'INNER':
+                if i + 1 < len(tokens) and tokens[i + 1].upper() == 'JOIN':
+                    join_type = 'INNER JOIN'
+                    i += 1
 
             if i + 1 < len(tokens):
                 right_table = tokens[i + 1]
                 right_alias = None
-
-                if is_valid_table_name(right_table):
-                    if i + 2 < len(tokens) and is_valid_alias(tokens[i + 2]):
-                        right_alias = tokens[i + 2]
+                if i + 2 < len(tokens):
+                    possible_alias = tokens[i + 2]
+                    if possible_alias.upper() not in ('ON', 'INNER', 'LEFT', 'RIGHT', 'JOIN', 'WHERE', 'GROUP', 'ORDER', 'OUTER'):
+                        right_alias = possible_alias
                         alias_mapping[right_alias] = right_table
-                        i += 2
-                    else:
                         i += 1
 
-                    join_keys_left = []
-                    join_keys_right = []
+                join_keys_left = []
+                join_keys_right = []
 
-                    while i < len(tokens) and tokens[i].upper() != 'ON':
-                        i += 1
-                    if i < len(tokens) and tokens[i].upper() == 'ON':
-                        i += 1
-                        condition = ''
-                        while i < len(tokens) and tokens[i].upper() not in ('INNER', 'LEFT', 'RIGHT', 'JOIN', 'WHERE', 'GROUP', 'ORDER'):
-                            condition += tokens[i] + ' '
-                            i += 1
-
-                        condition = clean_condition_functions(condition)
-                        join_matches = re.findall(r'(\w+)\.(\w+)\s*=\s*(\w+)\.(\w+)', condition, re.IGNORECASE)
-                        for match in join_matches:
-                            left_alias, left_col, right_alias2, right_col = match
-                            join_keys_left.append(left_col)
-                            join_keys_right.append(right_col)
-
-                    joins.append({
-                        'Left_Table': alias_mapping.get(current_left_alias, 'Derived/Temp'),
-                        'Left_Alias': current_left_alias,
-                        'Right_Table': right_table,
-                        'Right_Alias': right_alias,
-                        'Join_Type': join_type,
-                        'Join_Keys_Left': ', '.join(join_keys_left),
-                        'Join_Keys_Right': ', '.join(join_keys_right)
-                    })
-
-                    current_left_alias = right_alias
-                    current_left_table = right_table
-                else:
+                while i < len(tokens) and tokens[i].upper() != 'ON':
                     i += 1
+                if i < len(tokens) and tokens[i].upper() == 'ON':
+                    i += 1
+                    condition = ''
+                    while i < len(tokens) and tokens[i].upper() not in ('INNER', 'LEFT', 'RIGHT', 'JOIN', 'WHERE', 'GROUP', 'ORDER', 'OUTER'):
+                        condition += tokens[i] + ' '
+                        i += 1
+                    join_matches = re.findall(r'(\w+)\.(\w+)\s*=\s*(\w+)\.(\w+)', condition, re.IGNORECASE)
+                    for match in join_matches:
+                        left_alias, left_col, right_alias2, right_col = match
+                        join_keys_left.append(left_col)
+                        join_keys_right.append(right_col)
+
+                joins.append({
+                    'Left_Table': alias_mapping.get(current_left_alias, 'Derived/Temp'),
+                    'Left_Alias': current_left_alias,
+                    'Right_Table': right_table,
+                    'Right_Alias': right_alias,
+                    'Join_Type': join_type,
+                    'Join_Keys_Left': ', '.join(join_keys_left),
+                    'Join_Keys_Right': ', '.join(join_keys_right)
+                })
+
+                current_left_alias = right_alias
+                current_left_table = right_table
             else:
                 i += 1
         else:
@@ -97,20 +102,30 @@ def smart_extract_joins(sql_text):
 
     return joins
 
-def is_valid_table_name(name):
-    return name.count('.') >= 1 and not name.upper() in ('JOIN', 'SELECT', '(', ')')
-
-def is_valid_alias(name):
-    return not name.upper() in ('JOIN', 'ON', 'INNER', 'LEFT', 'RIGHT', 'SELECT', 'WHERE', 'GROUP', 'ORDER', 'BY', 'FROM')
-
 if __name__ == "__main__":
-    with open("input/your_query.sql", 'r') as f:
-        sql_text = f.read()
+    input_raw_sql = "input/raw_query.sql"
+    output_clean_sql = "input/cleaned_query.sql"
+    output_joins_excel = "output/smart_parsed_joins.xlsx"
 
-    joins = smart_extract_joins(sql_text)
+    os.makedirs("input", exist_ok=True)
+    os.makedirs("output", exist_ok=True)
+
+    # Step 1: Clean SQL
+    with open(input_raw_sql, 'r') as f:
+        raw_sql = f.read()
+
+    cleaned_sql = clean_sql_script(raw_sql)
+
+    with open(output_clean_sql, 'w') as f:
+        f.write(cleaned_sql)
+
+    print(f"✅ SQL cleaned and saved to {output_clean_sql}")
+
+    # Step 2: Parse joins
+    joins = smart_extract_joins(cleaned_sql)
 
     df = pd.DataFrame(joins)
-    df.to_excel("output/smart_parsed_joins.xlsx", index=False)
+    df.to_excel(output_joins_excel, index=False)
 
-    print("✅ Smart join parsing completed!")
+    print(f"✅ Smart joins extracted and saved to {output_joins_excel}")
     print(df)
