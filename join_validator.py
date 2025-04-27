@@ -37,6 +37,8 @@ def smart_split_table(full_table_name):
         raise ValueError(f"Invalid table name format: {full_table_name}")
 
 def check_table_exists(conn, database, schema, table_name):
+    schema = schema.upper()
+    table_name = table_name.upper()
     query = f"""
     SELECT COUNT(*)
     FROM {database}.INFORMATION_SCHEMA.TABLES
