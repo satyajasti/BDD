@@ -5,10 +5,24 @@ import re
 
 def smart_load_joins(input_file):
     df = pd.read_excel(input_file)
+
+    # Standardize column names to match expected keys
+    df.rename(columns={
+        'Left_Table': 'left_table',
+        'Right_Table': 'right_table',
+        'Left_Join_Columns': 'left_keys',
+        'Right_Join_Columns': 'right_keys',
+        'Join_Type': 'join_type',
+        'Join Keys Left': 'left_keys',
+        'Join Keys Right': 'right_keys'
+    }, inplace=True)
+
+    # Auto-split keys into lists
     if 'left_keys' in df.columns:
         df['left_keys'] = df['left_keys'].apply(lambda x: str(x).split(', ') if pd.notnull(x) else [])
     if 'right_keys' in df.columns:
         df['right_keys'] = df['right_keys'].apply(lambda x: str(x).split(', ') if pd.notnull(x) else [])
+
     return df.to_dict(orient='records')
 
 def check_table_exists(conn, database, schema, table_name):
