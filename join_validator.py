@@ -65,13 +65,36 @@ def check_table_exists(conn, database, schema, table_name):
     return exists
 
 def run_anti_join_validation(left_table, right_table, left_keys, right_keys):
-    join_condition = ' AND '.join([f"{safe_full_column('a', l)} = {safe_full_column('b', r)}" for l, r in zip(left_keys, right_keys)])
-    query = f"""
-    SELECT COUNT(*)
+    join_condition = # 1. Build ON condition for JOIN
+join_condition = ' AND '.join([
+    f"{safe_full_column('a', l)} = {safe_full_column('b', r)}"
+    for l, r in zip(left_keys, right_keys)
+])
+
+# 2. Build WHERE condition for NULL checks
+where_null_condition = ' AND '.join([
+    f"{safe_full_column('b', r)} IS NULL"
+    for r in right_keys
+])
+
+# 3. Build columns for SELECT inside subquery
+select_columns = ', '.join([
+    safe_full_column('a', l)
+    for l in left_keys
+])
+
+# 4. Full Anti-Join Query using Subquery
+anti_join_query = f"""
+SELECT COUNT(*)
+FROM (
+    SELECT {select_columns}
     FROM {left_table} a
     LEFT JOIN {right_table} b
-    ON {join_condition}
-    WHERE {safe_full_column('b', right_keys[0])} IS NULL
+      ON {join_condition}
+    WHERE {where_null_condition}
+)
+"""
+
     """
     return query
 
