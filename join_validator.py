@@ -42,11 +42,11 @@ def smart_split_table(full_table_name):
     else:
         raise ValueError(f"Invalid table name format: {full_table_name}")
 
-def safe_column(colname):
+def safe_full_column(alias, colname):
     if any(c in colname for c in (' ', '-', '#', '$')) or not colname.islower():
-        return f'"{colname}"'
+        return f'{alias}."{colname}"'
     else:
-        return colname
+        return f'{alias}.{colname}'
 
 def check_table_exists(conn, database, schema, table_name):
     schema = schema.upper()
@@ -64,19 +64,19 @@ def check_table_exists(conn, database, schema, table_name):
     cur.close()
     return exists
 
-def run_anti_join_validation(conn, left_table, right_table, left_keys, right_keys):
-    join_condition = ' AND '.join([f"a.{safe_column(l)} = b.{safe_column(r)}" for l, r in zip(left_keys, right_keys)])
+def run_anti_join_validation(left_table, right_table, left_keys, right_keys):
+    join_condition = ' AND '.join([f"{safe_full_column('a', l)} = {safe_full_column('b', r)}" for l, r in zip(left_keys, right_keys)])
     query = f"""
     SELECT COUNT(*)
     FROM {left_table} a
     LEFT JOIN {right_table} b
     ON {join_condition}
-    WHERE b.{safe_column(right_keys[0])} IS NULL
+    WHERE {safe_full_column('b', right_keys[0])} IS NULL
     """
     return query
 
 def run_join_multiplicity_validation(left_table, right_table, left_keys, right_keys):
-    join_condition = ' AND '.join([f"a.{safe_column(l)} = b.{safe_column(r)}" for l, r in zip(left_keys, right_keys)])
+    join_condition = ' AND '.join([f"{safe_full_column('a', l)} = {safe_full_column('b', r)}" for l, r in zip(left_keys, right_keys)])
     query = f"""
     SELECT COUNT(*)
     FROM (
@@ -89,12 +89,12 @@ def run_join_multiplicity_validation(left_table, right_table, left_keys, right_k
     return query
 
 def run_null_key_validation(left_table, left_keys):
-    null_conditions = ' OR '.join([f"{safe_column(key)} IS NULL" for key in left_keys])
-    query = f"SELECT COUNT(*) FROM {left_table} WHERE {null_conditions}"
+    null_conditions = ' OR '.join([f"{safe_full_column('a', key)} IS NULL" for key in left_keys])
+    query = f"SELECT COUNT(*) FROM {left_table} a WHERE {null_conditions}"
     return query
 
 def run_spot_check_validation(left_table, right_table, left_keys, right_keys):
-    join_condition = ' AND '.join([f"a.{safe_column(l)} = b.{safe_column(r)}" for l, r in zip(left_keys, right_keys)])
+    join_condition = ' AND '.join([f"{safe_full_column('a', l)} = {safe_full_column('b', r)}" for l, r in zip(left_keys, right_keys)])
     query = f"""
     SELECT a.*, b.*
     FROM {left_table} a
@@ -137,7 +137,7 @@ def validate_joins_from_list(joins_list, conn):
             continue
 
         try:
-            anti_join_query = run_anti_join_validation(conn, left_table, right_table, left_keys, right_keys)
+            anti_join_query = run_anti_join_validation(left_table, right_table, left_keys, right_keys)
             multiplicity_query = run_join_multiplicity_validation(left_table, right_table, left_keys, right_keys)
             null_query = run_null_key_validation(left_table, left_keys)
             spot_check_query = run_spot_check_validation(left_table, right_table, left_keys, right_keys)
