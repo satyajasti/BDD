@@ -28,6 +28,12 @@ def smart_load_joins(input_file):
 
     return df.to_dict(orient='records')
 
+def clean_dataframe(df):
+    df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_')
+    for col in df.select_dtypes(include=['object']).columns:
+        df[col] = df[col].str.strip()
+    return df
+
 def smart_split_table(full_table_name):
     parts = full_table_name.strip().split('.')
     parts = [p.strip() for p in parts if p.strip() != '']
@@ -67,14 +73,9 @@ def run_anti_join_validation(conn, left_table, right_table, left_keys, right_key
     ON {join_condition}
     WHERE b.{safe_column(right_keys[0])} IS NULL
     """
-    print(f"\n📄 Anti-Join Query:\n{query}")
-    cur = conn.cursor()
-    cur.execute(query)
-    missing_count = cur.fetchone()[0]
-    cur.close()
-    return missing_count
+    return query
 
-def run_join_multiplicity_validation(conn, left_table, right_table, left_keys, right_keys):
+def run_join_multiplicity_validation(left_table, right_table, left_keys, right_keys):
     join_condition = ' AND '.join([f"a.{safe_column(l)} = b.{safe_column(r)}" for l, r in zip(left_keys, right_keys)])
     query = f"""
     SELECT COUNT(*)
@@ -85,29 +86,14 @@ def run_join_multiplicity_validation(conn, left_table, right_table, left_keys, r
         ON {join_condition}
     )
     """
-    print(f"\n📄 Join Multiplicity Query:\n{query}")
-    cur = conn.cursor()
-    cur.execute(query)
-    joined_count = cur.fetchone()[0]
+    return query
 
-    cur.execute(f"SELECT COUNT(*) FROM {left_table}")
-    original_count = cur.fetchone()[0]
-    cur.close()
-
-    explosion = joined_count - original_count
-    return explosion
-
-def run_null_key_validation(conn, left_table, left_keys):
+def run_null_key_validation(left_table, left_keys):
     null_conditions = ' OR '.join([f"{safe_column(key)} IS NULL" for key in left_keys])
     query = f"SELECT COUNT(*) FROM {left_table} WHERE {null_conditions}"
-    print(f"\n📄 Null Key Query:\n{query}")
-    cur = conn.cursor()
-    cur.execute(query)
-    null_count = cur.fetchone()[0]
-    cur.close()
-    return null_count
+    return query
 
-def run_spot_check_validation(conn, left_table, right_table, left_keys, right_keys):
+def run_spot_check_validation(left_table, right_table, left_keys, right_keys):
     join_condition = ' AND '.join([f"a.{safe_column(l)} = b.{safe_column(r)}" for l, r in zip(left_keys, right_keys)])
     query = f"""
     SELECT a.*, b.*
@@ -116,9 +102,7 @@ def run_spot_check_validation(conn, left_table, right_table, left_keys, right_ke
     ON {join_condition}
     LIMIT 20
     """
-    print(f"\n📄 Spot-Check Query:\n{query}")
-    df = pd.read_sql(query, conn)
-    return df
+    return query
 
 def validate_joins_from_list(joins_list, conn):
     results = []
@@ -153,16 +137,40 @@ def validate_joins_from_list(joins_list, conn):
             continue
 
         try:
-            missing_records = run_anti_join_validation(conn, left_table, right_table, left_keys, right_keys)
-            explosion_records = run_join_multiplicity_validation(conn, left_table, right_table, left_keys, right_keys)
-            null_keys = run_null_key_validation(conn, left_table, left_keys)
-            spot_check_df = run_spot_check_validation(conn, left_table, right_table, left_keys, right_keys)
+            anti_join_query = run_anti_join_validation(conn, left_table, right_table, left_keys, right_keys)
+            multiplicity_query = run_join_multiplicity_validation(left_table, right_table, left_keys, right_keys)
+            null_query = run_null_key_validation(left_table, left_keys)
+            spot_check_query = run_spot_check_validation(left_table, right_table, left_keys, right_keys)
+
+            cur = conn.cursor()
+
+            print(f"\n📄 Executing Anti-Join Query:\n{anti_join_query}")
+            cur.execute(anti_join_query)
+            missing_count = cur.fetchone()[0]
+
+            print(f"\n📄 Executing Multiplicity Query:\n{multiplicity_query}")
+            cur.execute(multiplicity_query)
+            joined_count = cur.fetchone()[0]
+
+            cur.execute(f"SELECT COUNT(*) FROM {left_table}")
+            original_count = cur.fetchone()[0]
+            explosion = joined_count - original_count
+
+            print(f"\n📄 Executing Null Key Query:\n{null_query}")
+            cur.execute(null_query)
+            null_count = cur.fetchone()[0]
+
+            cur.close()
 
             validation_result = {
                 **join,
-                "Missing_Records": missing_records,
-                "Join_Explosion": explosion_records,
-                "Null_Join_Keys": null_keys,
+                "Anti_Join_Query": anti_join_query,
+                "Multiplicity_Query": multiplicity_query,
+                "Null_Key_Query": null_query,
+                "Spot_Check_Query": spot_check_query,
+                "Missing_Records": missing_count,
+                "Join_Explosion": explosion,
+                "Null_Join_Keys": null_count,
                 "Validation_Status": "Validated"
             }
             results.append(validation_result)
@@ -189,6 +197,7 @@ if __name__ == "__main__":
     result_df = validate_joins_from_list(joins_list, conn)
 
     os.makedirs("output", exist_ok=True)
+    result_df = clean_dataframe(result_df)
     result_df.to_excel(output_file, index=False)
 
     conn.close()
