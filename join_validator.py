@@ -36,6 +36,12 @@ def smart_split_table(full_table_name):
     else:
         raise ValueError(f"Invalid table name format: {full_table_name}")
 
+def safe_column(colname):
+    if any(c in colname for c in (' ', '-', '#', '$')) or not colname.islower():
+        return f'"{colname}"'
+    else:
+        return colname
+
 def check_table_exists(conn, database, schema, table_name):
     schema = schema.upper()
     table_name = table_name.upper()
@@ -53,13 +59,13 @@ def check_table_exists(conn, database, schema, table_name):
     return exists
 
 def run_anti_join_validation(conn, left_table, right_table, left_keys, right_keys):
-    join_condition = ' AND '.join([f"a.{l} = b.{r}" for l, r in zip(left_keys, right_keys)])
+    join_condition = ' AND '.join([f"a.{safe_column(l)} = b.{safe_column(r)}" for l, r in zip(left_keys, right_keys)])
     query = f"""
     SELECT COUNT(*)
     FROM {left_table} a
     LEFT JOIN {right_table} b
     ON {join_condition}
-    WHERE b.{right_keys[0]} IS NULL
+    WHERE b.{safe_column(right_keys[0])} IS NULL
     """
     print(f"\n📄 Anti-Join Query:\n{query}")
     cur = conn.cursor()
@@ -69,7 +75,7 @@ def run_anti_join_validation(conn, left_table, right_table, left_keys, right_key
     return missing_count
 
 def run_join_multiplicity_validation(conn, left_table, right_table, left_keys, right_keys):
-    join_condition = ' AND '.join([f"a.{l} = b.{r}" for l, r in zip(left_keys, right_keys)])
+    join_condition = ' AND '.join([f"a.{safe_column(l)} = b.{safe_column(r)}" for l, r in zip(left_keys, right_keys)])
     query = f"""
     SELECT COUNT(*)
     FROM (
@@ -92,7 +98,7 @@ def run_join_multiplicity_validation(conn, left_table, right_table, left_keys, r
     return explosion
 
 def run_null_key_validation(conn, left_table, left_keys):
-    null_conditions = ' OR '.join([f"{key} IS NULL" for key in left_keys])
+    null_conditions = ' OR '.join([f"{safe_column(key)} IS NULL" for key in left_keys])
     query = f"SELECT COUNT(*) FROM {left_table} WHERE {null_conditions}"
     print(f"\n📄 Null Key Query:\n{query}")
     cur = conn.cursor()
@@ -102,7 +108,7 @@ def run_null_key_validation(conn, left_table, left_keys):
     return null_count
 
 def run_spot_check_validation(conn, left_table, right_table, left_keys, right_keys):
-    join_condition = ' AND '.join([f"a.{l} = b.{r}" for l, r in zip(left_keys, right_keys)])
+    join_condition = ' AND '.join([f"a.{safe_column(l)} = b.{safe_column(r)}" for l, r in zip(left_keys, right_keys)])
     query = f"""
     SELECT a.*, b.*
     FROM {left_table} a
