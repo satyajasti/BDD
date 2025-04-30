@@ -3,54 +3,51 @@ from openpyxl import load_workbook, Workbook
 from openpyxl.utils.dataframe import dataframe_to_rows
 import pandas as pd
 
-# Path to the folder containing the 45 Excel workbooks
-input_folder = "path_to_your_excel_files"  # Update this!
+# 📂 Path to folder with 45 Excel files (update this path!)
+input_folder = "./workbooks"
 output_file = "TestResults.xlsx"
 
-# Sheet names to extract and order
-sheet_order = ['null', 'distinct', 'duplicate', 'extra1', 'extra2']  # replace 'extra1', 'extra2' with actual names if needed
-
-# Create a new workbook for merged results
+# Create the final merged workbook
 merged_wb = Workbook()
-merged_wb.remove(merged_wb.active)  # Remove default sheet
+merged_wb.remove(merged_wb.active)  # Remove default empty sheet
 
-# Loop through each file in the folder
+# Loop through each workbook file
 for file_name in os.listdir(input_folder):
     if file_name.endswith(".xlsx"):
         file_path = os.path.join(input_folder, file_name)
         wb_name = os.path.splitext(file_name)[0]  # e.g., DIM_COA
 
-        print(f"📄 Processing: {file_name}")
+        print(f"\n📄 Processing workbook: {file_name}")
 
         try:
             wb = load_workbook(file_path, data_only=True)
         except Exception as e:
-            print(f"❌ Error opening {file_name}: {e}")
+            print(f"❌ Error reading {file_name}: {e}")
             continue
 
-        # Create a new sheet in the merged workbook
+        # Create corresponding sheet in output workbook
         target_ws = merged_wb.create_sheet(title=wb_name)
+        current_row = 1
 
-        current_row = 1  # Track row position in target sheet
+        for sheet_name in wb.sheetnames:
+            print(f"   📄 Reading sheet: {sheet_name}")
+            try:
+                df = pd.read_excel(file_path, sheet_name=sheet_name)
 
-        for sheet_name in sheet_order:
-            if sheet_name not in wb.sheetnames:
-                print(f"⚠️ Sheet '{sheet_name}' not found in {file_name}")
-                continue
+                # Write section title (sheet name) in Column A
+                target_ws.cell(row=current_row, column=1, value=sheet_name.capitalize())
 
-            df = pd.read_excel(file_path, sheet_name=sheet_name)
+                # Write DataFrame starting from column B
+                for r_idx, row in enumerate(dataframe_to_rows(df, index=False, header=True), start=current_row + 1):
+                    for c_idx, value in enumerate(row, start=2):
+                        target_ws.cell(row=r_idx, column=c_idx, value=value)
 
-            # Title in column A
-            target_ws.cell(row=current_row, column=1, value=sheet_name.capitalize())
+                # Add 5 blank rows before next section
+                current_row = r_idx + 6
 
-            # Data in column B onwards
-            for r_idx, row in enumerate(dataframe_to_rows(df, index=False, header=True), start=current_row + 1):
-                for c_idx, value in enumerate(row, start=2):  # Start from column B
-                    target_ws.cell(row=r_idx, column=c_idx, value=value)
+            except Exception as e:
+                print(f"   ⚠️ Error reading sheet '{sheet_name}' in {file_name}: {e}")
 
-            # Add 5 blank rows between sections
-            current_row = r_idx + 6
-
-# Save the combined workbook
+# Save the final result
 merged_wb.save(output_file)
-print(f"\n✅ Merged workbook saved as: {output_file}")
+print(f"\n✅ All workbooks merged successfully into '{output_file}'")
