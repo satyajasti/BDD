@@ -3,30 +3,42 @@ from openpyxl import load_workbook, Workbook
 from openpyxl.utils.dataframe import dataframe_to_rows
 import pandas as pd
 
-# 📂 Path to folder with 45 Excel files (update this path!)
-input_folder = "./workbooks"
+# 📂 Folder path containing the Excel workbooks
+input_folder = "./workbooks"  # 🔁 Update this path as needed
 output_file = "TestResults.xlsx"
 
-# Create the final merged workbook
+# Create a new workbook
 merged_wb = Workbook()
-merged_wb.remove(merged_wb.active)  # Remove default empty sheet
+merged_wb.remove(merged_wb.active)  # Remove default sheet
 
-# Loop through each workbook file
+# Function to create a safe sheet name (<=31 chars)
+def get_safe_sheet_name(name, existing_names):
+    safe_name = name[:20]  # Truncate to 20 characters
+    original = safe_name
+    counter = 1
+    while safe_name in existing_names:
+        safe_name = f"{original[:17]}_{counter}"
+        counter += 1
+    return safe_name
+
+# Process each Excel file
 for file_name in os.listdir(input_folder):
     if file_name.endswith(".xlsx"):
         file_path = os.path.join(input_folder, file_name)
-        wb_name = os.path.splitext(file_name)[0]  # e.g., DIM_COA
+        base_name = os.path.splitext(file_name)[0]
 
         print(f"\n📄 Processing workbook: {file_name}")
 
         try:
             wb = load_workbook(file_path, data_only=True)
         except Exception as e:
-            print(f"❌ Error reading {file_name}: {e}")
+            print(f"❌ Error opening {file_name}: {e}")
             continue
 
-        # Create corresponding sheet in output workbook
-        target_ws = merged_wb.create_sheet(title=wb_name)
+        # Handle long sheet names and duplicates
+        target_sheet_name = get_safe_sheet_name(base_name, merged_wb.sheetnames)
+        target_ws = merged_wb.create_sheet(title=target_sheet_name)
+
         current_row = 1
 
         for sheet_name in wb.sheetnames:
@@ -34,20 +46,20 @@ for file_name in os.listdir(input_folder):
             try:
                 df = pd.read_excel(file_path, sheet_name=sheet_name)
 
-                # Write section title (sheet name) in Column A
+                # Write section title
                 target_ws.cell(row=current_row, column=1, value=sheet_name.capitalize())
 
-                # Write DataFrame starting from column B
+                # Write the data under column B
                 for r_idx, row in enumerate(dataframe_to_rows(df, index=False, header=True), start=current_row + 1):
                     for c_idx, value in enumerate(row, start=2):
                         target_ws.cell(row=r_idx, column=c_idx, value=value)
 
-                # Add 5 blank rows before next section
+                # Move down after writing this section
                 current_row = r_idx + 6
 
             except Exception as e:
                 print(f"   ⚠️ Error reading sheet '{sheet_name}' in {file_name}: {e}")
 
-# Save the final result
+# Save output workbook
 merged_wb.save(output_file)
 print(f"\n✅ All workbooks merged successfully into '{output_file}'")
