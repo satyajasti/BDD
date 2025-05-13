@@ -1,5 +1,3 @@
-# Final refactored src_trg_validator.py that integrates with your existing snowflake_connection.py
-
 import os
 import pandas as pd
 import json
