@@ -1,0 +1,60 @@
+import pandas as pd
+import snowflake.connector
+from snowflake_connection import get_snowflake_connection
+import os
+from pathlib import Path
+
+# Configuration
+CONFIG_FILE = "config.json"
+INPUT_EXCEL = "input/distinct_column_config.xlsx"
+OUTPUT_DIR = "output"
+OUTPUT_FILE = os.path.join(OUTPUT_DIR, "distinct_column_values.xlsx")
+DISTINCT_LIMIT = 5
+
+# Ensure output directory exists
+Path(OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
+
+# Read the Excel config file
+config_df = pd.read_excel(INPUT_EXCEL, sheet_name="Sheet1")
+config_df.columns = config_df.columns.str.strip()
+
+# Establish Snowflake connection
+conn, *_ = get_snowflake_connection(CONFIG_FILE)
+
+# Create a dictionary to store output per table
+output_tables = {}
+
+# Process each row of config
+for _, row in config_df.iterrows():
+    db = row.get("Database")
+    schema = row.get("Schema")
+    table = row.get("Table_Name")
+    full_table = f'"{db}"."{schema}"."{table}"'
+    
+    selected_columns = [col for col in row.index if row[col] == 'Yes' and col not in ['Database', 'Schema', 'Table_Name']]
+    combined_df = pd.DataFrame()
+    
+    for col in selected_columns:
+        query = f'SELECT DISTINCT "{col}" FROM {full_table} LIMIT {DISTINCT_LIMIT}'
+        cur = conn.cursor()
+        try:
+            cur.execute(query)
+            values = cur.fetchall()
+            col_df = pd.DataFrame(values, columns=[col])
+            if combined_df.empty:
+                combined_df = col_df
+            else:
+                combined_df = pd.concat([combined_df.reset_index(drop=True), col_df.reset_index(drop=True)], axis=1)
+        finally:
+            cur.close()
+    
+    combined_df.insert(0, "Table_Name", table)
+    output_tables[table] = combined_df
+
+# Write to Excel
+with pd.ExcelWriter(OUTPUT_FILE, engine='openpyxl') as writer:
+    for table, df in output_tables.items():
+        df.to_excel(writer, sheet_name=table[:31], index=False)
+
+conn.close()
+OUTPUT_FILE
