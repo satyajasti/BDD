@@ -1,0 +1,104 @@
+import os
+import pandas as pd
+from openpyxl.utils.dataframe import dataframe_to_rows
+from openpyxl import load_workbook, Workbook
+from snowflake_connection import get_snowflake_connection
+
+# Define fallback regex patterns by column keyword
+PATTERN_RULES = {
+    "email": r"^[\w\.-]+@[\w\.-]+\.\w{2,}$",
+    "dob": r"^\d{4}-\d{2}-\d{2}$",
+    "phone": r"^\d{10}$",
+    "ssn": r"^\d{3}-\d{2}-\d{4}$",
+    "zip": r"^\d{5}$",
+    "gender": r"^(M|F)$",
+    "date": r"^\d{4}-\d{2}-\d{2}$",
+    "name": r"^[A-Za-z\s\-']+$",
+    "id": r"^\d+$"
+}
+
+def write_df_to_sheet(wb, sheet_name, df):
+    print(f"\nWriting to sheet: {sheet_name} (Rows: {len(df)})")
+    ws = wb.create_sheet(title=sheet_name)
+    for row in dataframe_to_rows(df, index=False, header=True):
+        if any(row):
+            ws.append(row)
+
+def infer_pattern(column_name):
+    col_lower = column_name.lower()
+    for key, pattern in PATTERN_RULES.items():
+        if key in col_lower:
+            return pattern
+    return None
+
+def run_pattern_validation(conn, database, schema, table, pattern_columns):
+    cur = conn.cursor()
+    
+    # Fetch columns from table
+    cur.execute(f"""
+        SELECT COLUMN_NAME 
+        FROM {database}.INFORMATION_SCHEMA.COLUMNS 
+        WHERE TABLE_SCHEMA = '{schema}' AND TABLE_NAME = '{table}'
+    """)
+    table_columns = [row[0] for row in cur.fetchall()]
+
+    summary_rows = []
+    invalid_data_frames = []
+
+    for col in pattern_columns:
+        if col not in table_columns:
+            continue  # silently skip non-existing columns
+
+        pattern = infer_pattern(col)
+        if not pattern:
+            continue
+
+        query = f"""
+            SELECT * 
+            FROM \"{database}\".\"{schema}\".\"{table}\"
+            WHERE NOT REGEXP_LIKE(\"{col}\", '{pattern}')
+        """
+
+        print(f"\n Pattern check on {table}.{col} using pattern: {pattern}")
+        try:
+            df_invalid = pd.read_sql(query, conn)
+            summary_rows.append({
+                "Column": col,
+                "Pattern": pattern,
+                "Invalid_Count": len(df_invalid),
+                "Query": query.strip()
+            })
+            if not df_invalid.empty:
+                df_invalid.insert(0, "Validation_Column", col)
+                df_invalid.insert(1, "Pattern", pattern)
+                invalid_data_frames.append(df_invalid)
+        except Exception as e:
+            print(f" Error running pattern check for {col}: {e}")
+            summary_rows.append({
+                "Column": col,
+                "Pattern": pattern,
+                "Invalid_Count": "Error",
+                "Query": str(e)
+            })
+
+    summary_df = pd.DataFrame(summary_rows)
+    invalid_df = pd.concat(invalid_data_frames, ignore_index=True) if invalid_data_frames else pd.DataFrame()
+    cur.close()
+    return summary_df, invalid_df
+
+def integrate_pattern_validation(wb, conn, database, schema, table, pattern_file):
+    if not os.path.exists(pattern_file):
+        print(f" Pattern file {pattern_file} not found.")
+        return
+
+    pattern_df = pd.read_excel(pattern_file)
+    pattern_columns = pattern_df['Column'].dropna().unique().tolist()
+    
+    summary_df, invalid_df = run_pattern_validation(conn, database, schema, table, pattern_columns)
+    
+    if not summary_df.empty:
+        write_df_to_sheet(wb, "pattern_summary", summary_df)
+    if not invalid_df.empty:
+        write_df_to_sheet(wb, "invalid_data_sample", invalid_df)
+
+    return wb
