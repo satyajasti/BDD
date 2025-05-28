@@ -1,0 +1,94 @@
+import os
+import pandas as pd
+from openpyxl import Workbook, load_workbook
+from openpyxl.utils.dataframe import dataframe_to_rows
+from snowflake_connection import get_snowflake_connection
+
+BAD_PATTERN = r"^(.)\1{2,}$"  # Repeated character/digit pattern
+
+AUDIT_COLUMNS = [
+    'inserted_by', 'inserted_tmstmp',
+    'updated_by', 'updated_tmstmp',
+    'created_by', 'created_tmstmp',
+    'modified_by', 'modified_tmstmp'
+]
+
+def write_df_to_sheet(wb, sheet_name, df):
+    print(f"Writing to sheet: {sheet_name} (Rows: {len(df)})")
+    ws = wb.create_sheet(title=sheet_name)
+    for row in dataframe_to_rows(df, index=False, header=True):
+        if any(row):
+            ws.append(row)
+
+def run_bad_data_check(conn, database, schema, table):
+    cur = conn.cursor()
+    query = f"""
+        SELECT COLUMN_NAME 
+        FROM {database}.INFORMATION_SCHEMA.COLUMNS 
+        WHERE TABLE_SCHEMA = '{schema}' AND TABLE_NAME = '{table}'
+    """
+    cur.execute(query)
+    columns = [row[0] for row in cur.fetchall() if row[0].lower() not in AUDIT_COLUMNS]
+
+    results_summary = []
+    sample_frames = []
+
+    for col in columns:
+        check_query = f"""
+            SELECT "{col}" 
+            FROM "{database}"."{schema}"."{table}"
+            WHERE REGEXP_LIKE("{col}", '{BAD_PATTERN}')
+            LIMIT 5
+        """
+        print(f"\n🔍 Checking for repeated char pattern in column: {col}")
+        try:
+            df = pd.read_sql(check_query, conn)
+            if df.empty:
+                results_summary.append({
+                    "Column": col,
+                    "Status": " No bad data found",
+                    "Query": check_query.strip()
+                })
+            else:
+                df.insert(0, "Column", col)
+                df.insert(1, "Status", " Bad data found")
+                results_summary.append({
+                    "Column": col,
+                    "Status": f" {len(df)} bad rows found",
+                    "Query": check_query.strip()
+                })
+                sample_frames.append(df)
+        except Exception as e:
+            results_summary.append({
+                "Column": col,
+                "Status": f"Error: {e}",
+                "Query": check_query.strip()
+            })
+
+    summary_df = pd.DataFrame(results_summary)
+    sample_df = pd.concat(sample_frames, ignore_index=True) if sample_frames else pd.DataFrame()
+    cur.close()
+    return summary_df, sample_df
+
+def run_and_save_bad_data_check(conn, database, schema, table, output_dir):
+    summary_df, sample_df = run_bad_data_check(conn, database, schema, table)
+
+    output_file = os.path.join(output_dir, f"{table}_bad_data.xlsx")
+    if os.path.exists(output_file):
+        wb = load_workbook(output_file)
+    else:
+        wb = Workbook()
+        wb.remove(wb.active)
+
+    write_df_to_sheet(wb, "bad_data_summary", summary_df)
+    if not sample_df.empty:
+        write_df_to_sheet(wb, "bad_data_samples", sample_df)
+
+    wb.save(output_file)
+    print(f"\n Bad data check saved to {output_file}")
+
+if __name__ == "__main__":
+    config_path = "config.json"
+    conn, database, schema, *_ = get_snowflake_connection(config_path)
+    run_and_save_bad_data_check(conn, database, schema, "your_table_name_here", "C:\\TI\\Results")
+    conn.close()
