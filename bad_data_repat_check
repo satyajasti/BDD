@@ -35,22 +35,25 @@ def run_bad_data_check(conn, database, schema, table):
             WHERE REGEXP_LIKE(\"{col}\", '{BAD_PATTERN}')
             LIMIT 5
         """
-        print(f"\n🔍 Checking for repeated char pattern in column: {col}")
+        print(f"\n Checking for repeated char pattern in column: {col}")
         try:
-            df = pd.read_sql(check_query, conn)
-            if df.empty:
+            cur.execute(check_query)
+            rows = cur.fetchall()
+            if not rows:
                 results_summary.append({
                     "Column": col,
-                    "Status": "✅ No bad data found",
+                    "Status": " No bad data found",
                     "SQL_Query": check_query.strip()
                 })
             else:
+                columns_list = [desc[0] for desc in cur.description]
+                df = pd.DataFrame(rows, columns=columns_list)
                 df.insert(0, "Column", col)
-                df.insert(1, "Status", "❌ Bad data found")
+                df.insert(1, "Status", " Bad data found")
                 df.insert(2, "SQL_Query", check_query.strip())
                 results_summary.append({
                     "Column": col,
-                    "Status": f"❌ {len(df)} bad rows found",
+                    "Status": f" {len(df)} bad rows found",
                     "SQL_Query": check_query.strip()
                 })
                 sample_frames.append(df)
