@@ -4,7 +4,6 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.utils.dataframe import dataframe_to_rows
 from snowflake_connection import get_snowflake_connection
 
-BAD_PATTERN = r"^(.)\1{2,}$"  # Repeated character/digit pattern
 
 def write_df_to_sheet(wb, sheet_name, df):
     print(f"Writing to sheet: {sheet_name} (Rows: {len(df)})")
@@ -32,28 +31,30 @@ def run_bad_data_check(conn, database, schema, table):
         check_query = f"""
             SELECT \"{col}\" 
             FROM \"{database}\".\"{schema}\".\"{table}\"
-            WHERE REGEXP_LIKE(\"{col}\", '{BAD_PATTERN}')
+            WHERE \"{col}\" IS NOT NULL
+              AND LENGTH(TRIM(\"{col}\")) > 1
+              AND LENGTH(TRANSLATE(TRIM(\"{col}\"), SUBSTR(TRIM(\"{col}\"), 1, 1), '')) = 0
             LIMIT 5
         """
-        print(f"\n Checking for repeated char pattern in column: {col}")
+        print(f"🔍 Checking for repeated character pattern in column: {col}")
         try:
             cur.execute(check_query)
             rows = cur.fetchall()
             if not rows:
                 results_summary.append({
                     "Column": col,
-                    "Status": " No bad data found",
+                    "Status": "No bad data found",
                     "SQL_Query": check_query.strip()
                 })
             else:
                 columns_list = [desc[0] for desc in cur.description]
                 df = pd.DataFrame(rows, columns=columns_list)
                 df.insert(0, "Column", col)
-                df.insert(1, "Status", " Bad data found")
+                df.insert(1, "Status", "Bad data found")
                 df.insert(2, "SQL_Query", check_query.strip())
                 results_summary.append({
                     "Column": col,
-                    "Status": f" {len(df)} bad rows found",
+                    "Status": f"{len(df)} bad rows found",
                     "SQL_Query": check_query.strip()
                 })
                 sample_frames.append(df)
