@@ -2,7 +2,8 @@ import os
 import pandas as pd
 from openpyxl import Workbook, load_workbook
 from openpyxl.utils.dataframe import dataframe_to_rows
-from snowflake_connection import get_snowflake_connection  # Make sure this is in PYTHONPATH
+from snowflake_connection import get_snowflake_connection
+
 
 def get_column_types(conn, database, schema, table):
     query = f"""
@@ -18,6 +19,7 @@ def get_column_types(conn, database, schema, table):
     categorical = [r[0] for r in rows if r[1].upper() in ('TEXT', 'VARCHAR', 'CHAR', 'STRING')]
     numeric = [r[0] for r in rows if r[1].upper() in ('NUMBER', 'FLOAT', 'INT', 'DECIMAL', 'NUMERIC', 'DOUBLE')]
     return categorical, numeric
+
 
 def get_skew_data_with_query(conn, database, schema, table, columns, top_n=3, skew_threshold=0.8):
     cur = conn.cursor()
@@ -56,6 +58,7 @@ def get_skew_data_with_query(conn, database, schema, table, columns, top_n=3, sk
     cur.close()
     return pd.DataFrame(summary)
 
+
 def get_outlier_data_with_query(conn, database, schema, table, columns):
     cur = conn.cursor()
     summary = []
@@ -89,6 +92,7 @@ def get_outlier_data_with_query(conn, database, schema, table, columns):
     cur.close()
     return pd.DataFrame(summary)
 
+
 def write_to_excel(df, wb, sheet_name):
     if sheet_name in wb.sheetnames:
         del wb[sheet_name]
@@ -97,17 +101,18 @@ def write_to_excel(df, wb, sheet_name):
         if any(row):
             ws.append(row)
 
+
 def run_skew_and_outlier_validation(config_path, input_excel):
     conn, database, schema = get_snowflake_connection(config_path)
     table_df = pd.read_excel(input_excel)
 
     for _, row in table_df.iterrows():
         table = row['Table']
-        print(f"\n🔍 Validating: {database}.{schema}.{table}")
+        print(f"\n Validating: {database}.{schema}.{table}")
         cat_cols, num_cols = get_column_types(conn, database, schema, table)
 
-        skew_df = get_skew_data(conn, database, schema, table, cat_cols)
-        outlier_df = get_outlier_data(conn, database, schema, table, num_cols)
+        skew_df = get_skew_data_with_query(conn, database, schema, table, cat_cols)
+        outlier_df = get_outlier_data_with_query(conn, database, schema, table, num_cols)
 
         output_file = f"{table}_skew_outlier_check.xlsx"
         if os.path.exists(output_file):
@@ -119,10 +124,8 @@ def run_skew_and_outlier_validation(config_path, input_excel):
         write_to_excel(skew_df, wb, "skew_check")
         write_to_excel(outlier_df, wb, "outlier_check")
         wb.save(output_file)
-        print(f"✅ Results saved: {output_file}")
+        print(f" Results saved: {output_file}")
 
     conn.close()
     print("\n🔒 Snowflake connection closed.")
 
-# Example usage:
-# run_skew_and_outlier_validation("config.json", "table_list.xlsx")
