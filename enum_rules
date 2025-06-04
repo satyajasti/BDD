@@ -1,0 +1,79 @@
+import pandas as pd
+from openpyxl import Workbook
+from openpyxl.utils.dataframe import dataframe_to_rows
+import os
+from snowflake_connection import get_snowflake_connection
+
+
+def detect_column_type(conn, database, schema, table, column):
+    query = f"""
+        SELECT DATA_TYPE
+        FROM {database}.INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = '{schema}' AND TABLE_NAME = '{table}' AND COLUMN_NAME = '{column}'
+    """
+    cur = conn.cursor()
+    cur.execute(query)
+    result = cur.fetchone()
+    cur.close()
+    return result[0].upper() if result else "TEXT"
+
+
+def generate_allowed_str(allowed_values, col_type):
+    if col_type in ['NUMBER', 'INT', 'FLOAT', 'DECIMAL', 'NUMERIC', 'DOUBLE']:
+        return ", ".join([val.strip() for val in allowed_values if val.strip().replace('.', '', 1).isdigit()])
+    else:
+        return ", ".join([f"'{val.strip()}'" for val in allowed_values])
+
+
+def run_enum_validation(config_path, rules_excel):
+    conn, database, _, _, _, _ = get_snowflake_connection(config_path)
+    rules_df = pd.read_excel(rules_excel)
+
+    output_dir = "C:\\TI\\Enum_Validation"
+    os.makedirs(output_dir, exist_ok=True)
+
+    summary = []
+
+    for _, row in rules_df.iterrows():
+        table = row['Table']
+        schema = row['Schema']
+        column = row['Column']
+        allowed_values = [v.strip() for v in str(row['Allowed_Values']).split(',')]
+        col_type = detect_column_type(conn, database, schema, table, column)
+        allowed_str = generate_allowed_str(allowed_values, col_type)
+
+        query = f"""
+            SELECT DISTINCT "{column}"
+            FROM "{database}"."{schema}"."{table}"
+            WHERE "{column}" IS NOT NULL
+              AND "{column}" NOT IN ({allowed_str})
+        """
+
+        print(f" Checking ENUMs in {schema}.{table}.{column}")
+        try:
+            df = pd.read_sql(query, conn)
+
+            if not df.empty:
+                df.insert(0, "Table", table)
+                df.insert(1, "Schema", schema)
+                df.insert(2, "Column", column)
+                df.insert(3, "Allowed_Values", ", ".join(allowed_values))
+                df.insert(4, "Query_Used", query.strip())
+                summary.append(df)
+        except Exception as e:
+            print(f" Error checking {table}.{column}: {e}")
+
+    if summary:
+        result_df = pd.concat(summary, ignore_index=True)
+        output_file = os.path.join(output_dir, "enum_validation_results.xlsx")
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Invalid_Enum_Values"
+        for r in dataframe_to_rows(result_df, index=False, header=True):
+            ws.append(r)
+        wb.save(output_file)
+        print(f" Results saved to {output_file}")
+    else:
+        print(" No invalid enum values found.")
+
+    conn.close()
