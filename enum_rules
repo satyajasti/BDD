@@ -47,33 +47,66 @@ def run_enum_validation(config_path, rules_excel):
             FROM "{database}"."{schema}"."{table}"
             WHERE "{column}" IS NOT NULL
               AND "{column}" NOT IN ({allowed_str})
-        """
+        """.strip()
 
         print(f" Checking ENUMs in {schema}.{table}.{column}")
         try:
-            df = pd.read_sql(query, conn)
+            cur = conn.cursor()
+            cur.execute(query)
+            rows = cur.fetchall()
+            columns = [desc[0] for desc in cur.description]
+            cur.close()
+            df = pd.DataFrame(rows, columns=["Invalid_Value"])
 
             if not df.empty:
                 df.insert(0, "Table", table)
                 df.insert(1, "Schema", schema)
                 df.insert(2, "Column", column)
-                df.insert(3, "Allowed_Values", ", ".join(allowed_values))
-                df.insert(4, "Query_Used", query.strip())
+                df.insert(4, "Allowed_Values", ", ".join(allowed_values))
+                df.insert(5, "Query_Used", query.strip())
                 summary.append(df)
         except Exception as e:
             print(f" Error checking {table}.{column}: {e}")
 
+    output_file = os.path.join(output_dir, "enum_validation_results.xlsx")
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Invalid_Enum_Values"
+
     if summary:
         result_df = pd.concat(summary, ignore_index=True)
-        output_file = os.path.join(output_dir, "enum_validation_results.xlsx")
-        wb = Workbook()
-        ws = wb.active
-        ws.title = "Invalid_Enum_Values"
-        for r in dataframe_to_rows(result_df, index=False, header=True):
-            ws.append(r)
-        wb.save(output_file)
-        print(f" Results saved to {output_file}")
     else:
         print(" No invalid enum values found.")
 
+        placeholder_rows = []
+        for _, row in rules_df.iterrows():
+            table = row['Table']
+            schema = row['Schema']
+            column = row['Column']
+            allowed_values = [v.strip() for v in str(row['Allowed_Values']).split(',')]
+            col_type = detect_column_type(conn, database, schema, table, column)
+            allowed_str = generate_allowed_str(allowed_values, col_type)
+
+            query = f"""
+                SELECT DISTINCT "{column}"
+                FROM "{database}"."{schema}"."{table}"
+                WHERE "{column}" IS NOT NULL
+                  AND "{column}" NOT IN ({allowed_str})
+            """.strip()
+
+            placeholder_rows.append({
+                "Table": table,
+                "Schema": schema,
+                "Column": column,
+                "Invalid_Value": "All enum values are valid. No issues found.",
+                "Allowed_Values": ", ".join(allowed_values),
+                "Query_Used": query
+            })
+
+        result_df = pd.DataFrame(placeholder_rows)
+
+    for r in dataframe_to_rows(result_df, index=False, header=True):
+        ws.append(r)
+    wb.save(output_file)
+    print(f" Validation results saved to {output_file}")
     conn.close()
