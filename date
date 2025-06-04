@@ -1,0 +1,53 @@
+import pandas as pd
+from datetime import datetime, timedelta
+
+
+def get_date_columns(conn, database, schema, table):
+    query = f"""
+        SELECT COLUMN_NAME
+        FROM {database}.INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = '{schema}' AND TABLE_NAME = '{table}'
+        AND DATA_TYPE ILIKE ANY (ARRAY['DATE', 'DATETIME', 'TIMESTAMP'])
+    """
+    cur = conn.cursor()
+    cur.execute(query)
+    result = [row[0] for row in cur.fetchall()]
+    cur.close()
+    return result
+
+
+def run_date_range_validation(conn, database, schema, table):
+    date_columns = get_date_columns(conn, database, schema, table)
+    cur = conn.cursor()
+    results = []
+
+    for col in date_columns:
+        query = f"""
+            SELECT MIN("{col}"), MAX("{col}")
+            FROM "{database}"."{schema}"."{table}"
+            WHERE "{col}" IS NOT NULL
+        """
+        cur.execute(query)
+        min_date, max_date = cur.fetchone()
+
+        issues = []
+        if min_date and min_date < datetime(1900, 1, 1):
+            issues.append("Min date is before 1900")
+        if max_date and max_date > datetime.today() + timedelta(days=7):
+            issues.append("Max date is in future")
+        if str(min_date).startswith("1900"):
+            issues.append("Min date looks like a default")
+        if str(max_date).startswith("9999"):
+            issues.append("Max date looks like a default")
+
+        results.append({
+            "Table": table,
+            "Column": col,
+            "Min_Date": min_date,
+            "Max_Date": max_date,
+            "Issue": "; ".join(issues) if issues else "OK",
+            "Query_Used": query.strip()
+        })
+
+    cur.close()
+    return pd.DataFrame(results)
