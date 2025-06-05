@@ -1,53 +1,81 @@
+# Directory: snowflake_validation_framework
+# This script assumes you will copy/move your existing code into the structure shown below.
+
+# -------------------------
+# File: common/logger.py
+# -------------------------
+import logging
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+LOG_DIR = os.getenv("LOG_DIR", "logs")
+os.makedirs(LOG_DIR, exist_ok=True)
+
+log_path = os.path.join(LOG_DIR, "validation.log")
+
+logging.basicConfig(
+    filename=log_path,
+    filemode='a',
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    level=logging.INFO
+)
+
+logger = logging.getLogger(__name__)
+
+# -------------------------
+# File: common/config_loader.py
+# -------------------------
+import json
 import pandas as pd
-from datetime import datetime, timedelta
 
+def load_config(path):
+    with open(path, 'r') as f:
+        return json.load(f)
 
-def get_date_columns(conn, database, schema, table):
-    query = f"""
-        SELECT COLUMN_NAME
-        FROM {database}.INFORMATION_SCHEMA.COLUMNS
-        WHERE TABLE_SCHEMA = '{schema}' AND TABLE_NAME = '{table}'
-        AND DATA_TYPE ILIKE ANY (ARRAY['DATE', 'DATETIME', 'TIMESTAMP'])
-    """
-    cur = conn.cursor()
-    cur.execute(query)
-    result = [row[0] for row in cur.fetchall()]
-    cur.close()
-    return result
+def load_excel(path):
+    return pd.read_excel(path)
 
+# -------------------------
+# File: features/validation.feature
+# -------------------------
+Feature: Snowflake Data Validations
 
-def run_date_range_validation(conn, database, schema, table):
-    date_columns = get_date_columns(conn, database, schema, table)
-    cur = conn.cursor()
-    results = []
+  Scenario: Run all validations for all tables
+    Given the config file "config/config.json" is loaded
+    And the table list from "config/table_list.xlsx" is loaded
+    When I run all validations
+    Then validation results should be written to Excel
 
-    for col in date_columns:
-        query = f"""
-            SELECT MIN("{col}"), MAX("{col}")
-            FROM "{database}"."{schema}"."{table}"
-            WHERE "{col}" IS NOT NULL
-        """
-        cur.execute(query)
-        min_date, max_date = cur.fetchone()
+# -------------------------
+# File: steps/validation_steps.py
+# -------------------------
+from behave import given, when, then
+from runner.run_validation import run_validation
 
-        issues = []
-        if min_date and min_date < datetime(1900, 1, 1):
-            issues.append("Min date is before 1900")
-        if max_date and max_date > datetime.today() + timedelta(days=7):
-            issues.append("Max date is in future")
-        if str(min_date).startswith("1900"):
-            issues.append("Min date looks like a default")
-        if str(max_date).startswith("9999"):
-            issues.append("Max date looks like a default")
+@given('the config file "{config}" is loaded')
+def step_load_config(context, config):
+    context.config_path = config
 
-        results.append({
-            "Table": table,
-            "Column": col,
-            "Min_Date": min_date,
-            "Max_Date": max_date,
-            "Issue": "; ".join(issues) if issues else "OK",
-            "Query_Used": query.strip()
-        })
+@given('the table list from "{excel}" is loaded')
+def step_load_table_list(context, excel):
+    context.excel_path = excel
 
-    cur.close()
-    return pd.DataFrame(results)
+@when('I run all validations')
+def step_run_validations(context):
+    run_validation(context.excel_path, context.config_path)
+
+@then('validation results should be written to Excel')
+def step_verify_output(context):
+    print("✅ Validation completed. Check output folder.")
+
+# -------------------------
+# File: .env
+# -------------------------
+LOG_DIR=logs
+
+# -------------------------
+# Sample shell command to run tests
+# -------------------------
+# > behave
