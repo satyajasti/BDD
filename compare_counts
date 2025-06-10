@@ -1,0 +1,64 @@
+import pandas as pd
+import os
+from openpyxl import load_workbook
+from snowflake_connection import get_snowflake_connection
+
+def run_count_comparison(excel_path, config_path):
+    sheet_name = 'count_comparison'
+
+    # Load Excel
+    if os.path.exists(excel_path):
+        book = load_workbook(excel_path)
+        if sheet_name in book.sheetnames:
+            df = pd.read_excel(excel_path, sheet_name=sheet_name)
+        else:
+            df = pd.read_excel(excel_path)
+            df['u01_count'] = None
+            df['u02_count'] = None
+            df['Change_%'] = None
+    else:
+        print(f" Excel file not found: {excel_path}")
+        return
+
+    # Connect to Snowflake
+    conn, *_ = get_snowflake_connection(config_path)
+
+    try:
+        for idx, row in df.iterrows():
+            db, schema, table = row['Database'], row['Schema'], row['Table']
+            query = f'SELECT COUNT(*) FROM "{db}"."{schema}"."{table}"'
+
+            try:
+                cursor = conn.cursor()
+                cursor.execute(query)
+                count = cursor.fetchone()[0]
+                print(f" {db}.{schema}.{table} - Count: {count}")
+
+                if pd.isna(row.get('u01_count')):
+                    df.at[idx, 'u01_count'] = count
+                else:
+                    df.at[idx, 'u02_count'] = count
+                    u01 = row.get('u01_count', 0)
+                    if u01:
+                        change_pct = round(((count - u01) / u01) * 100, 2)
+                        df.at[idx, 'Change_%'] = f"{change_pct:.2f}%"
+                    else:
+                        df.at[idx, 'Change_%'] = 'N/A'
+                cursor.close()
+
+            except Exception as e:
+                print(f" Error querying {db}.{schema}.{table}: {e}")
+                df.at[idx, 'Error'] = str(e)
+
+    finally:
+        conn.close()
+        print(" Snowflake connection closed")
+
+    # Save result back to Excel
+    with pd.ExcelWriter(excel_path, engine='openpyxl', mode='a', if_sheet_exists='replace') as writer:
+        df.to_excel(writer, sheet_name=sheet_name, index=False)
+    print(f" Results written to sheet '{sheet_name}' in {excel_path}")
+
+# Example usage:
+if __name__ == "__main__":
+    run_count_comparison("tables_input.xlsx", "config.json")
